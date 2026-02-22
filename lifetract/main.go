@@ -18,6 +18,7 @@ Usage:
 Commands:
   status                 Show data source availability and stats
   today                  Today's unified health + time summary
+  timeline [--days N]    Date-indexed unified view (denotecli-compatible)
   sleep   [--days N]     Sleep session analysis
   steps   [--days N]     Daily step counts
   heart   [--days N]     Heart rate statistics
@@ -63,6 +64,8 @@ func main() {
 		result, err = cmdStatus(cfg)
 	case "today":
 		result, err = cmdToday(cfg)
+	case "timeline":
+		result, err = cmdTimeline(cfg)
 	case "sleep":
 		result, err = cmdSleep(cfg)
 	case "steps":

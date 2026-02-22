@@ -29,6 +29,15 @@ Shows data source availability, record counts, and date ranges.
 
 Unified daily summary: steps, sleep, heart rate, stress, time categories.
 
+### Timeline (denotecli-compatible)
+
+```bash
+{baseDir}/lifetract timeline --days 7
+{baseDir}/lifetract timeline --days 30
+```
+
+Date-indexed unified view. Each entry keyed by `date: "YYYY-MM-DD"` — same format as denotecli journal entries. Use to correlate health/time data with notes on the same day.
+
 ### Sleep analysis
 
 ```bash
