@@ -1,8 +1,8 @@
 # lifetract
 
-**Life tracking CLI for AI agents: Samsung Health + aTimeLogger unified query**
+**Life + Traction — 삶의 정량 데이터를 AI 에이전트가 조회하는 CLI**
 
-> Go + modernc.org/sqlite. Single binary. JSON output. Korean-native.
+> Go · modernc.org/sqlite · Single static binary · JSON output · Korean-native
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
@@ -10,18 +10,17 @@
 
 ## What This Does
 
-CLI tool that gives AI agents (Claude Code, pi, etc.) structured access to personal life-tracking data. Parses Samsung Health CSV exports and aTimeLogger SQLite DB. Returns JSON.
+Samsung Health CSV(8종) + aTimeLogger SQLite(18 카테고리)를 단일 SQLite DB(`lifetract.db`)로 통합.
+AI 에이전트(Claude Code, pi 등)가 JSON으로 건강·시간 데이터를 즉시 조회.
 
-```
-./run.sh build                    # Build + install to ~/.local/bin
-lifetract status                  # DB/data status overview
-lifetract today                   # 건강 + 시간 통합 요약
-lifetract sleep --days 7          # 수면 분석
-lifetract steps --days 7          # 걸음 수
-lifetract heart --days 7          # 심박 추이
-lifetract stress --days 7         # 스트레스 추이
-lifetract time --days 7           # 시간 카테고리 분석 (aTimeLogger)
-lifetract exercise --days 30      # 운동 세션
+모든 레코드에 Denote ID(`YYYYMMDDTHHMMSS`)를 부여 → [denotecli](https://github.com/junghan0611/denotecli)와 같은 시간축으로 교차 조회 가능.
+
+```bash
+lifetract import --exec             # CSV+aTimeLogger → lifetract.db (1.5초, 33MB)
+lifetract today                     # 오늘 통합 요약
+lifetract read 2025-10-04           # 특정 날짜 종합 (건강+시간추적)
+lifetract timeline --days 30        # 30일 횡단 뷰
+lifetract time --days 30            # aTimeLogger 시간 카테고리
 ```
 
 ---
@@ -31,147 +30,102 @@ lifetract exercise --days 30      # 운동 세션
 ```bash
 git clone https://github.com/junghan0611/lifetract.git
 cd lifetract
-./run.sh build    # Builds binary → ~/.local/bin/lifetract
+./run.sh build    # → ~/.local/bin/lifetract + pi-skills SKILL.md
 ```
 
-Requires Go 1.21+.
+Go 1.21+ 필요. Nix 사용자: `nix build` (CGO_ENABLED=0 정적 빌드).
 
 ---
 
-## Data Sources
-
-### Samsung Health CSV Export (수동 내보내기)
+## Architecture
 
 ```
-~/repos/gh/self-tracking-data/samsunghealth_gtgkjh_20251006104703/
-├── com.samsung.health.sleep_stage.*.csv        # 수면 스테이지
-├── com.samsung.shealth.sleep.*.csv             # 수면 세션
-├── com.samsung.shealth.tracker.heart_rate.*.csv # 심박
-├── com.samsung.shealth.tracker.pedometer_step_count.*.csv # 걸음
-├── com.samsung.shealth.stress.*.csv            # 스트레스
-├── com.samsung.shealth.exercise.*.csv          # 운동
-├── com.samsung.health.weight.*.csv             # 체중
-└── ... (77 CSV files total)
+lifetract import --exec
+  Samsung Health CSVs (77개, 942MB) ─┐
+  aTimeLogger SQLite (5MB) ──────────┼→ lifetract.db (33MB, 183,635 rows)
+                                     │
+lifetract <command>                  │
+  DB 있음? → SQLite 쿼리 (~90ms) ────┘
+  DB 없음? → CSV 직접 파싱 (~300ms, fallback)
 ```
 
-- Period: 2021-01 ~ 2025-10
-- Format: CSV with BOM, comma-separated
+### DB 테이블
 
-### aTimeLogger SQLite DB
-
-```
-~/repos/gh/self-tracking-data/atimelogger/database.db3
-```
-
-- Format: SQLite 3.x (5MB)
-- Content: Time tracking categories and intervals
+| 테이블 | 소스 | 레코드 |
+|--------|------|--------|
+| `sleep` | Samsung Health | 4,212 |
+| `sleep_stage` | Samsung Health | 71,245 |
+| `heart_rate` | Samsung Health | 58,701 |
+| `steps_daily` | Samsung Health | 9,227 |
+| `stress` | Samsung Health | 23,627 |
+| `exercise` | Samsung Health | 2,180 |
+| `weight` | Samsung Health | 283 |
+| `hrv` | Samsung Health | 1,058 |
+| `atl_category` | aTimeLogger | 18 |
+| `atl_interval` | aTimeLogger | 13,102 |
 
 ---
 
 ## Commands
 
-### status
+| 커맨드 | 설명 |
+|--------|------|
+| `status` | 데이터 소스 + DB 상태 |
+| `import [--exec]` | DB 생성 (dry-run / 실행) |
+| `today` | 오늘 통합 요약 |
+| `read <id>` | Denote ID로 조회 (일별/이벤트별) |
+| `timeline [--days N]` | 날짜별 횡단 뷰 |
+| `sleep [--days N] [--summary]` | 수면 분석 |
+| `steps [--days N]` | 걸음 수 |
+| `heart [--days N]` | 심박 추이 |
+| `stress [--days N]` | 스트레스 |
+| `exercise [--days N]` | 운동 세션 |
+| `time [--days N] [--category X]` | aTimeLogger 시간 카테고리 |
+| `export` | 공개용 내보내기 계획 |
 
-```bash
-lifetract status
+### Flags
+
+| Flag | Default | 설명 |
+|------|---------|------|
+| `--days N` | 7 | 조회 기간 |
+| `--data-dir DIR` | `~/repos/gh/self-tracking-data` | 데이터 루트 |
+| `--shealth-dir DIR` | 최신 자동감지 | Samsung Health 디렉토리 |
+| `--summary` | false | 요약 모드 |
+| `--category CAT` | 전체 | 시간 카테고리 필터 |
+| `--exec` | false | import 실행 모드 |
+
+---
+
+## Denote ID System
+
+```
+Day level:   20251004T000000  ← denotecli 저널과 동일
+Event level: 20251004T233000  ← 수면 시작, 운동 시작 등
 ```
 
-Shows data source availability, record counts, date ranges.
-
-### today
-
+교차 조회:
 ```bash
-lifetract today
-```
-
-Unified daily summary: steps, sleep, heart rate, stress, time categories.
-
-### sleep
-
-```bash
-lifetract sleep --days 7
-lifetract sleep --days 30 --summary
-```
-
-### steps
-
-```bash
-lifetract steps --days 7
-lifetract steps --days 30
-```
-
-### heart
-
-```bash
-lifetract heart --days 7
-```
-
-### stress
-
-```bash
-lifetract stress --days 7
-```
-
-### time
-
-```bash
-lifetract time --days 7
-lifetract time --days 7 --category "Deep Work"
-```
-
-### exercise
-
-```bash
-lifetract exercise --days 30
+lifetract read 2025-10-04       # 그날 몸 상태 + 시간 사용
+denotecli search "20251004"     # 그날 적은 노트/저널
 ```
 
 ---
 
-## Output
+## Data Sources
 
-All output is JSON:
+| 소스 | 포맷 | 기간 | 위치 |
+|------|------|------|------|
+| Samsung Health | CSV export (77개) | 2017-03 ~ 2025-10 | `self-tracking-data/samsunghealth_*/` |
+| aTimeLogger | SQLite DB | 2021-10 ~ 2025-10 | `self-tracking-data/atimelogger/database.db3` |
 
-```json
-// status
-{"samsung_health": {"path": "...", "csv_count": 77, "date_range": ["2021-01-21", "2025-10-06"]},
- "atimelogger": {"path": "...", "size_mb": 5.0, "available": true}}
+### aTimeLogger 카테고리 (Indistractable 분류)
 
-// today
-{"date": "2025-10-06", "steps": 8432, "sleep_hours": 7.2, "avg_hr": 72, "stress_avg": 35,
- "time_categories": [{"name": "Deep Work", "minutes": 180}, ...]}
-
-// sleep
-[{"date": "2025-10-05", "start": "23:30", "end": "06:42", "duration_hours": 7.2,
-  "stages": {"deep": 85, "light": 210, "rem": 95, "awake": 22}}]
-```
-
----
-
-## Flags
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--days N` | Days to look back | 7 |
-| `--data-dir DIR` | Self-tracking data directory | `~/repos/gh/self-tracking-data` |
-| `--summary` | Summary mode (aggregated) | false |
-| `--category CAT` | Filter by time category | all |
-
----
-
-## As an AI Skill
-
-### pi / Claude Code
-
-```bash
-# Option 1: Build and use
-./run.sh build
-lifetract today
-
-# Option 2: Via pi-skills (pre-installed)
-# See https://github.com/junghan0611/pi-skills
-```
-
-See [SKILL.md](SKILL.md) for full skill documentation.
+| 분류 | 카테고리 |
+|------|----------|
+| **Traction** | 본짓, 독서, 수행, 운동, 걷기, 셀프토크 |
+| **Maintenance** | 수면, 낮잠, 식사, 준비, 집안일, 이동, 쇼핑 |
+| **Distraction** | 딴짓, 유튜브, 짧은휴식, 여가활동 |
+| **Family** | 가족 |
 
 ---
 
@@ -179,35 +133,35 @@ See [SKILL.md](SKILL.md) for full skill documentation.
 
 ```
 lifetract/
-├── run.sh                 # Build + install entry point
-├── SKILL.md               # AI skill definition (pi-skills compatible)
-├── lifetract/
-│   ├── go.mod             # Go module
-│   ├── main.go            # CLI routing
-│   ├── config.go          # Configuration + paths
-│   ├── shealth.go         # Samsung Health CSV parser
-│   ├── shealth_test.go    # Samsung Health tests
-│   ├── atimelogger.go     # aTimeLogger SQLite parser
-│   ├── atimelogger_test.go
-│   └── output.go          # JSON output formatting
-└── docs/                  # Design docs
+├── run.sh              # Build + install + skill deploy
+├── SKILL.md            # AI skill 정의 (pi-skills)
+├── flake.nix           # Nix 패키징 (CGO_ENABLED=0)
+├── docs/plan.md        # 로드맵
+└── lifetract/          # Go source
+    ├── main.go         # CLI 라우팅
+    ├── config.go       # 설정
+    ├── helpers.go      # 공유 유틸 (denoteID, 시간파서 등)
+    ├── csv.go          # Samsung Health CSV 파서 + 레코드 타입
+    ├── db.go           # SQLite 스키마 + 연결
+    ├── db_query.go     # DB 쿼리 함수
+    ├── import.go       # Import 매니페스트
+    ├── import_exec.go  # CSV→DB 변환 로직
+    ├── export.go       # 공개용 내보내기 + 카테고리 정책
+    ├── query.go        # 조회 커맨드 (DB↔CSV 라우팅)
+    ├── timeline.go     # 타임라인 빌더
+    ├── read.go         # Denote ID 조회
+    └── *_test.go       # 47 tests, 68% coverage
 ```
 
 ---
 
 ## Related Projects
 
-| Project | Description |
-|---------|-------------|
-| [denotecli](https://github.com/junghan0611/denotecli) | Denote knowledge base CLI (sister project — same architecture) |
-| [pi-skills](https://github.com/junghan0611/pi-skills) | AI skill collection for Claude Code |
-| [self-tracking-data](https://github.com/junghan0611/self-tracking-data) | Raw data source |
-| [samsung-health-skill](https://github.com/MudgesBot/samsung-health-skill) | Python reference (Health Connect SQLite) |
+| Project | 역할 |
+|---------|------|
+| [denotecli](https://github.com/junghan0611/denotecli) | 정성 데이터 (노트/저널 3,000+) — 같은 Denote ID 축 |
+| [self-tracking-data](https://github.com/junghan0611/self-tracking-data) | 원본 데이터 저장소 |
 
 ---
 
-**Author**: [@junghanacs](https://github.com/junghan0611)
-
-## License
-
-Apache 2.0
+**Author**: [@junghanacs](https://github.com/junghan0611) · Apache 2.0
