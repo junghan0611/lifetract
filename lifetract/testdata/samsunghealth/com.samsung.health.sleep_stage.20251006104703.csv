@@ -1,0 +1,8 @@
+﻿com.samsung.health.sleep_stage,6305105,7
+create_sh_ver,start_time,sleep_id,custom,modify_sh_ver,update_time,create_time,stage,time_offset,deviceuuid,pkg_name,end_time,datauuid
+,2025-01-15 23:30:00.000,sleep-uuid-001,,,2025-01-15 23:30:00.000,2025-01-15 23:45:00.000,40002,UTC+0900,test-device,com.sec.android.app.shealth,2025-01-15 23:45:00.000,stage-001,
+,2025-01-15 23:45:00.000,sleep-uuid-001,,,2025-01-15 23:45:00.000,2025-01-16 00:30:00.000,40003,UTC+0900,test-device,com.sec.android.app.shealth,2025-01-16 00:30:00.000,stage-002,
+,2025-01-16 00:30:00.000,sleep-uuid-001,,,2025-01-16 00:30:00.000,2025-01-16 02:00:00.000,40004,UTC+0900,test-device,com.sec.android.app.shealth,2025-01-16 02:00:00.000,stage-003,
+,2025-01-16 02:00:00.000,sleep-uuid-001,,,2025-01-16 02:00:00.000,2025-01-16 04:30:00.000,40002,UTC+0900,test-device,com.sec.android.app.shealth,2025-01-16 04:30:00.000,stage-004,
+,2025-01-16 04:30:00.000,sleep-uuid-001,,,2025-01-16 04:30:00.000,2025-01-16 06:30:00.000,40003,UTC+0900,test-device,com.sec.android.app.shealth,2025-01-16 06:30:00.000,stage-005,
+,2025-01-16 06:30:00.000,sleep-uuid-001,,,2025-01-16 06:30:00.000,2025-01-16 06:42:00.000,40001,UTC+0900,test-device,com.sec.android.app.shealth,2025-01-16 06:42:00.000,stage-006,

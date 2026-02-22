@@ -1,0 +1,4 @@
+﻿com.samsung.shealth.exercise,6305105,16
+activity_type,total_calorie,com.samsung.health.exercise.duration,com.samsung.health.exercise.start_time,com.samsung.health.exercise.exercise_type,com.samsung.health.exercise.mean_heart_rate,com.samsung.health.exercise.max_heart_rate,com.samsung.health.exercise.end_time,com.samsung.health.exercise.time_offset,com.samsung.health.exercise.deviceuuid,com.samsung.health.exercise.pkg_name,com.samsung.health.exercise.datauuid
+,120.5,1800000,2025-01-15 07:30:00.000,1001,110.5,145.0,2025-01-15 08:00:00.000,UTC+0900,test-device,com.sec.android.app.shealth,ex-uuid-001
+,280.0,2400000,2025-01-16 18:00:00.000,1002,135.0,165.0,2025-01-16 18:40:00.000,UTC+0900,test-device,com.sec.android.app.shealth,ex-uuid-002
