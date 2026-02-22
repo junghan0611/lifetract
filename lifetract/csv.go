@@ -11,12 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
+
+// --- CSV reader ---
 
 // shealthReadCSV reads a Samsung Health CSV file and returns header + records.
 // Samsung Health CSVs have: line 1 = metadata, line 2 = headers, line 3+ = data.
-// Files have UTF-8 BOM.
 func shealthReadCSV(path string) ([]string, []map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -26,7 +26,7 @@ func shealthReadCSV(path string) ([]string, []map[string]string, error) {
 
 	reader := csv.NewReader(f)
 	reader.LazyQuotes = true
-	reader.FieldsPerRecord = -1 // variable fields
+	reader.FieldsPerRecord = -1
 
 	// Line 1: metadata (skip)
 	if _, err := reader.Read(); err != nil {
@@ -38,7 +38,6 @@ func shealthReadCSV(path string) ([]string, []map[string]string, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading headers: %w", err)
 	}
-	// Strip BOM from first header if present
 	if len(headers) > 0 {
 		headers[0] = stripBOM(headers[0])
 	}
@@ -51,7 +50,7 @@ func shealthReadCSV(path string) ([]string, []map[string]string, error) {
 			break
 		}
 		if err != nil {
-			continue // skip malformed rows
+			continue
 		}
 
 		rec := make(map[string]string, len(headers))
@@ -66,68 +65,46 @@ func shealthReadCSV(path string) ([]string, []map[string]string, error) {
 	return headers, records, nil
 }
 
-func stripBOM(s string) string {
-	if len(s) >= 3 && s[0] == 0xEF && s[1] == 0xBB && s[2] == 0xBF {
-		return s[3:]
-	}
-	// Also handle decoded BOM
-	r, size := utf8.DecodeRuneInString(s)
-	if r == 0xFEFF {
-		return s[size:]
-	}
-	return s
-}
-
-// parseShealthTime parses "2021-01-21 01:19:00.000" format.
-func parseShealthTime(s string) (time.Time, error) {
-	// Try with milliseconds first
-	t, err := time.ParseInLocation("2006-01-02 15:04:05.000", s, time.Local)
+// countCSVRows counts data rows in a Samsung Health CSV (skips metadata + header).
+func countCSVRows(path string) (int, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		t, err = time.ParseInLocation("2006-01-02 15:04:05", s, time.Local)
+		return 0, err
 	}
-	return t, err
-}
+	defer f.Close()
 
-// dateStr returns "2006-01-02" from a time.
-func dateStr(t time.Time) string {
-	return t.Format("2006-01-02")
-}
+	reader := csv.NewReader(f)
+	reader.LazyQuotes = true
+	reader.FieldsPerRecord = -1
 
-// timeStr returns "15:04" from a time.
-func timeStr(t time.Time) string {
-	return t.Format("15:04")
-}
+	reader.Read() // skip metadata
+	reader.Read() // skip header
 
-// denoteID returns Denote identifier "YYYYMMDDTHHMMSS" from a time.
-func denoteID(t time.Time) string {
-	return t.Format("20060102T150405")
-}
-
-// denoteDayID returns Denote identifier for a date "YYYYMMDDT000000".
-func denoteDayID(dateStr string) string {
-	t, err := time.Parse("2006-01-02", dateStr)
-	if err != nil {
-		return dateStr // fallback
+	count := 0
+	for {
+		_, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+		count++
 	}
-	return t.Format("20060102T000000")
+	return count, nil
 }
 
-// cutoffTime returns time N days ago from now.
-func cutoffTime(days int) time.Time {
-	return time.Now().AddDate(0, 0, -days)
-}
-
-// --- Sleep ---
+// --- Record types ---
 
 type SleepRecord struct {
-	ID            string             `json:"id"`
-	Date          string             `json:"date"`
-	Start         string             `json:"start"`
-	End           string             `json:"end"`
-	DurationHours float64            `json:"duration_hours"`
-	SleepScore    int                `json:"sleep_score,omitempty"`
-	Efficiency    float64            `json:"efficiency,omitempty"`
-	Stages        *SleepStages       `json:"stages,omitempty"`
+	ID            string       `json:"id"`
+	Date          string       `json:"date"`
+	Start         string       `json:"start"`
+	End           string       `json:"end"`
+	DurationHours float64      `json:"duration_hours"`
+	SleepScore    int          `json:"sleep_score,omitempty"`
+	Efficiency    float64      `json:"efficiency,omitempty"`
+	Stages        *SleepStages `json:"stages,omitempty"`
 }
 
 type SleepStages struct {
@@ -136,6 +113,74 @@ type SleepStages struct {
 	RemMin   float64 `json:"rem_min"`
 	AwakeMin float64 `json:"awake_min"`
 }
+
+type StepRecord struct {
+	ID    string `json:"id"`
+	Date  string `json:"date"`
+	Steps int    `json:"steps"`
+}
+
+type HeartRecord struct {
+	ID      string  `json:"id"`
+	Date    string  `json:"date"`
+	AvgHR   float64 `json:"avg_hr"`
+	MinHR   int     `json:"min_hr"`
+	MaxHR   int     `json:"max_hr"`
+	Samples int     `json:"samples"`
+}
+
+type StressRecord struct {
+	ID       string  `json:"id"`
+	Date     string  `json:"date"`
+	AvgScore float64 `json:"avg_score"`
+	MinScore int     `json:"min_score"`
+	MaxScore int     `json:"max_score"`
+	Samples  int     `json:"samples"`
+}
+
+type ExerciseRecord struct {
+	ID              string  `json:"id"`
+	Date            string  `json:"date"`
+	Type            string  `json:"type"`
+	DurationMinutes float64 `json:"duration_minutes"`
+	Calories        float64 `json:"calories,omitempty"`
+	AvgHR           float64 `json:"avg_hr,omitempty"`
+	MaxHR           float64 `json:"max_hr,omitempty"`
+}
+
+type TimeRecord struct {
+	Date       string         `json:"date"`
+	Categories []TimeCategory `json:"categories"`
+}
+
+type TimeCategory struct {
+	Name    string  `json:"name"`
+	Minutes float64 `json:"minutes"`
+}
+
+// Samsung Health exercise type codes
+var exerciseTypes = map[string]string{
+	"0":     "Other",
+	"1001":  "Walking",
+	"1002":  "Running",
+	"1003":  "Cycling",
+	"1004":  "Hiking",
+	"1005":  "Swimming",
+	"1006":  "Elliptical",
+	"1007":  "Rowing",
+	"10001": "Strength Training",
+	"11007": "Walking (Legacy)",
+	"11008": "Running (Legacy)",
+	"11009": "Cycling (Legacy)",
+	"11010": "Hiking (Legacy)",
+	"11014": "Swimming (Legacy)",
+	"13001": "Stretching",
+	"15001": "Yoga",
+	"15003": "Pilates",
+	"15005": "Meditation",
+}
+
+// --- CSV parsers ---
 
 func parseSleepRecords(cfg *Config, days int) ([]SleepRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.sleep.")
@@ -150,8 +195,6 @@ func parseSleepRecords(cfg *Config, days int) ([]SleepRecord, error) {
 
 	cutoff := cutoffTime(days)
 	var results []SleepRecord
-
-	// Also load sleep stages for duration breakdown
 	stageMap := loadSleepStages(cfg)
 
 	for _, rec := range records {
@@ -187,27 +230,22 @@ func parseSleepRecords(cfg *Config, days int) ([]SleepRecord, error) {
 			DurationHours: math.Round(duration*10) / 10,
 		}
 
-		// Parse sleep score
 		if s := rec["sleep_score"]; s != "" {
 			if n, err := strconv.Atoi(s); err == nil {
 				sr.SleepScore = n
 			}
 		}
-
-		// Parse efficiency
 		if s := rec["efficiency"]; s != "" {
 			if f, err := strconv.ParseFloat(s, 64); err == nil {
 				sr.Efficiency = math.Round(f*10) / 10
 			}
 		}
 
-		// Match sleep stages by sleep ID (datauuid)
 		uuid := rec["com.samsung.health.sleep.datauuid"]
 		if stages, ok := stageMap[uuid]; ok {
 			sr.Stages = stages
 		}
 
-		// Parse inline stage durations if available
 		if sr.Stages == nil {
 			stages := &SleepStages{}
 			hasStages := false
@@ -237,7 +275,6 @@ func parseSleepRecords(cfg *Config, days int) ([]SleepRecord, error) {
 	return results, nil
 }
 
-// Stage codes: 40001=Awake, 40002=Light, 40003=Deep, 40004=REM
 func loadSleepStages(cfg *Config) map[string]*SleepStages {
 	path := cfg.shealthCSV("com.samsung.health.sleep_stage.")
 	if path == "" {
@@ -249,10 +286,9 @@ func loadSleepStages(cfg *Config) map[string]*SleepStages {
 		return nil
 	}
 
-	// Group by sleep_id
 	type stageEntry struct {
 		stage    int
-		duration float64 // minutes
+		duration float64
 	}
 	groups := make(map[string][]stageEntry)
 
@@ -309,18 +345,9 @@ func loadSleepStages(cfg *Config) map[string]*SleepStages {
 	return result
 }
 
-// --- Steps ---
-
-type StepRecord struct {
-	ID    string `json:"id"`
-	Date  string `json:"date"`
-	Steps int    `json:"steps"`
-}
-
 func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.step_daily_trend.")
 	if path == "" {
-		// Fallback to pedometer
 		return parseStepRecordsFromPedometer(cfg, days)
 	}
 
@@ -338,10 +365,8 @@ func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
 			continue
 		}
 
-		// day_time is epoch milliseconds
 		dayTimeStr := rec["day_time"]
 		if dayTimeStr == "" {
-			// Try create_time
 			ctStr := rec["create_time"]
 			if ctStr == "" {
 				continue
@@ -424,17 +449,6 @@ func stepsMapToSorted(m map[string]int) []StepRecord {
 	return results
 }
 
-// --- Heart Rate ---
-
-type HeartRecord struct {
-	ID      string  `json:"id"`
-	Date    string  `json:"date"`
-	AvgHR   float64 `json:"avg_hr"`
-	MinHR   int     `json:"min_hr"`
-	MaxHR   int     `json:"max_hr"`
-	Samples int     `json:"samples"`
-}
-
 func parseHeartRecords(cfg *Config, days int) ([]HeartRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.tracker.heart_rate.")
 	if path == "" {
@@ -507,17 +521,6 @@ func parseHeartRecords(cfg *Config, days int) ([]HeartRecord, error) {
 		return results[i].Date > results[j].Date
 	})
 	return results, nil
-}
-
-// --- Stress ---
-
-type StressRecord struct {
-	ID       string  `json:"id"`
-	Date     string  `json:"date"`
-	AvgScore float64 `json:"avg_score"`
-	MinScore int     `json:"min_score"`
-	MaxScore int     `json:"max_score"`
-	Samples  int     `json:"samples"`
 }
 
 func parseStressRecords(cfg *Config, days int) ([]StressRecord, error) {
@@ -594,47 +597,12 @@ func parseStressRecords(cfg *Config, days int) ([]StressRecord, error) {
 	return results, nil
 }
 
-// --- Exercise ---
-
-type ExerciseRecord struct {
-	ID              string  `json:"id"`
-	Date            string  `json:"date"`
-	Type            string  `json:"type"`
-	DurationMinutes float64 `json:"duration_minutes"`
-	Calories        float64 `json:"calories,omitempty"`
-	AvgHR           float64 `json:"avg_hr,omitempty"`
-	MaxHR           float64 `json:"max_hr,omitempty"`
-}
-
-// Samsung Health exercise type codes
-var exerciseTypes = map[string]string{
-	"0":     "Other",
-	"1001":  "Walking",
-	"1002":  "Running",
-	"1003":  "Cycling",
-	"1004":  "Hiking",
-	"1005":  "Swimming",
-	"1006":  "Elliptical",
-	"1007":  "Rowing",
-	"10001": "Strength Training",
-	"11007": "Walking (Legacy)",
-	"11008": "Running (Legacy)",
-	"11009": "Cycling (Legacy)",
-	"11010": "Hiking (Legacy)",
-	"11014": "Swimming (Legacy)",
-	"13001": "Stretching",
-	"15001": "Yoga",
-	"15003": "Pilates",
-	"15005": "Meditation",
-}
-
 func parseExerciseRecords(cfg *Config, days int) ([]ExerciseRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.exercise.")
 	if path == "" {
 		return nil, fmt.Errorf("exercise CSV not found")
 	}
 
-	// Avoid matching sub-files like exercise.photo, exercise.program, etc.
 	matches, _ := filepath.Glob(filepath.Join(cfg.ShealthDir, "com.samsung.shealth.exercise.2*.csv"))
 	if len(matches) == 0 {
 		return nil, fmt.Errorf("exercise CSV not found")
@@ -705,6 +673,15 @@ func parseExerciseRecords(cfg *Config, days int) ([]ExerciseRecord, error) {
 		results = append(results, er)
 	}
 
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Date > results[j].Date
+	})
+	return results, nil
+}
+
+func parseTimeRecords(cfg *Config, days int) ([]TimeRecord, error) {
+	_ = days
+	var results []TimeRecord
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Date > results[j].Date
 	})

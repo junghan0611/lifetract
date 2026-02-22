@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -571,36 +570,4 @@ func importATimeLogger(db *sql.DB, cfg *Config) (int, error) {
 	return count, nil
 }
 
-// --- Helpers ---
-
-func parseInt(s string) int {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	// Handle floats like "85.0"
-	if strings.Contains(s, ".") {
-		f, _ := strconv.ParseFloat(s, 64)
-		return int(f)
-	}
-	n, _ := strconv.Atoi(s)
-	return n
-}
-
-func parseFloat(s string) float64 {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	f, _ := strconv.ParseFloat(s, 64)
-	return f
-}
-
-func firstNonEmpty(rec map[string]string, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := rec[k]; ok && v != "" {
-			return v
-		}
-	}
-	return ""
-}
+// parseInt, parseFloat, firstNonEmpty → helpers.go

@@ -36,9 +36,7 @@ func cmdRead(cfg *Config) (interface{}, error) {
 	return readEvent(cfg, t, id)
 }
 
-func parseDenoteID(id string) (time.Time, error) {
-	return time.ParseInLocation("20060102T150405", id, time.Local)
-}
+// parseDenoteID → helpers.go
 
 // readDay returns the full timeline entry for a specific day.
 func readDay(cfg *Config, day time.Time) (interface{}, error) {

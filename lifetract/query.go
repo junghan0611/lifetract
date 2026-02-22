@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -19,6 +18,13 @@ type ShealthStatus struct {
 	CSVCount  int      `json:"csv_count"`
 	AllDirs   []string `json:"all_dirs,omitempty"`
 	DateRange []string `json:"date_range,omitempty"`
+}
+
+type ATimeLoggerStatus struct {
+	Path      string  `json:"path"`
+	Available bool    `json:"available"`
+	SizeMB    float64 `json:"size_mb,omitempty"`
+	Note      string  `json:"note,omitempty"`
 }
 
 func cmdStatus(cfg *Config) (interface{}, error) {
@@ -40,49 +46,52 @@ func cmdStatus(cfg *Config) (interface{}, error) {
 	}, nil
 }
 
+func getATimeLoggerStatus(cfg *Config) ATimeLoggerStatus {
+	info, err := os.Stat(cfg.ATimeLoggerDB)
+	if err != nil {
+		return ATimeLoggerStatus{
+			Path:      cfg.ATimeLoggerDB,
+			Available: false,
+			Note:      "database.db3 not found",
+		}
+	}
+
+	return ATimeLoggerStatus{
+		Path:      cfg.ATimeLoggerDB,
+		Available: true,
+		SizeMB:    float64(info.Size()) / (1024 * 1024),
+	}
+}
+
 // --- today ---
 
 type TodayResult struct {
-	Date           string        `json:"date"`
-	Steps          int           `json:"steps"`
-	SleepHours     float64       `json:"sleep_hours"`
-	AvgHR          float64       `json:"avg_hr"`
-	StressAvg      float64       `json:"stress_avg"`
+	Date           string         `json:"date"`
+	Steps          int            `json:"steps"`
+	SleepHours     float64        `json:"sleep_hours"`
+	AvgHR          float64        `json:"avg_hr"`
+	StressAvg      float64        `json:"stress_avg"`
 	TimeCategories []TimeCategory `json:"time_categories,omitempty"`
 }
 
 func cmdToday(cfg *Config) (interface{}, error) {
 	result := &TodayResult{
-		Date: dateStr(cutoffTime(0).AddDate(0, 0, 1)), // today
+		Date: dateStr(cutoffTime(0).AddDate(0, 0, 1)),
 	}
 
-	// Steps (last 1 day)
-	steps, err := parseStepRecords(cfg, 1)
-	if err == nil && len(steps) > 0 {
+	if steps, err := parseStepRecords(cfg, 1); err == nil && len(steps) > 0 {
 		result.Steps = steps[0].Steps
 	}
-
-	// Sleep (last 2 days to catch last night)
-	sleeps, err := parseSleepRecords(cfg, 2)
-	if err == nil && len(sleeps) > 0 {
+	if sleeps, err := parseSleepRecords(cfg, 2); err == nil && len(sleeps) > 0 {
 		result.SleepHours = sleeps[0].DurationHours
 	}
-
-	// Heart rate (last 1 day)
-	hearts, err := parseHeartRecords(cfg, 1)
-	if err == nil && len(hearts) > 0 {
+	if hearts, err := parseHeartRecords(cfg, 1); err == nil && len(hearts) > 0 {
 		result.AvgHR = hearts[0].AvgHR
 	}
-
-	// Stress (last 1 day)
-	stresses, err := parseStressRecords(cfg, 1)
-	if err == nil && len(stresses) > 0 {
+	if stresses, err := parseStressRecords(cfg, 1); err == nil && len(stresses) > 0 {
 		result.StressAvg = stresses[0].AvgScore
 	}
-
-	// Time categories (stub for now)
-	times, _ := parseTimeRecords(cfg, 1)
-	if len(times) > 0 {
+	if times, _ := parseTimeRecords(cfg, 1); len(times) > 0 {
 		result.TimeCategories = times[0].Categories
 	}
 
@@ -96,7 +105,6 @@ func cmdSleep(cfg *Config) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	if cfg.Summary {
 		return sleepSummary(records), nil
 	}
@@ -140,7 +148,6 @@ func sleepSummary(records []SleepRecord) *SleepSummary {
 		s.AvgEfficiency = round1(totalEff / float64(effCount))
 	}
 
-	// Count unique dates
 	dates := make(map[string]bool)
 	for _, r := range records {
 		dates[r.Date] = true
@@ -150,31 +157,23 @@ func sleepSummary(records []SleepRecord) *SleepSummary {
 	return s
 }
 
-// --- steps ---
+// --- steps/heart/stress/exercise/time ---
 
 func cmdSteps(cfg *Config) (interface{}, error) {
 	return parseStepRecords(cfg, cfg.Days)
 }
 
-// --- heart ---
-
 func cmdHeart(cfg *Config) (interface{}, error) {
 	return parseHeartRecords(cfg, cfg.Days)
 }
-
-// --- stress ---
 
 func cmdStress(cfg *Config) (interface{}, error) {
 	return parseStressRecords(cfg, cfg.Days)
 }
 
-// --- exercise ---
-
 func cmdExercise(cfg *Config) (interface{}, error) {
 	return parseExerciseRecords(cfg, cfg.Days)
 }
-
-// --- time ---
 
 func cmdTime(cfg *Config) (interface{}, error) {
 	status := getATimeLoggerStatus(cfg)
@@ -198,19 +197,4 @@ func cmdTime(cfg *Config) (interface{}, error) {
 	}
 
 	return records, nil
-}
-
-// --- helpers ---
-
-func round1(f float64) float64 {
-	return float64(int(f*10+0.5)) / 10
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-func errorf(format string, args ...interface{}) error {
-	return fmt.Errorf(format, args...)
 }
