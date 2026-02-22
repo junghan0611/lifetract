@@ -14,9 +14,10 @@ type StatusResult struct {
 }
 
 type ShealthStatus struct {
-	Path      string `json:"path"`
-	Available bool   `json:"available"`
-	CSVCount  int    `json:"csv_count"`
+	Path      string   `json:"path"`
+	Available bool     `json:"available"`
+	CSVCount  int      `json:"csv_count"`
+	AllDirs   []string `json:"all_dirs,omitempty"`
 	DateRange []string `json:"date_range,omitempty"`
 }
 
@@ -26,6 +27,9 @@ func cmdStatus(cfg *Config) (interface{}, error) {
 		matches, _ := filepath.Glob(filepath.Join(cfg.ShealthDir, "*.csv"))
 		sh.CSVCount = len(matches)
 		sh.Available = sh.CSVCount > 0
+	}
+	if len(cfg.ShealthDirs) > 1 {
+		sh.AllDirs = cfg.ShealthDirs
 	}
 
 	atl := getATimeLoggerStatus(cfg)

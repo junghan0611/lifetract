@@ -17,6 +17,10 @@
           src = ./lifetract;
           vendorHash = null; # stdlib only (Phase 1)
 
+          # Static build — Docker/container에서 glibc 동적 링크 불가
+          env.CGO_ENABLED = 0;
+          ldflags = [ "-s" "-w" ];
+
           meta = with pkgs.lib; {
             description = "Life tracking CLI for AI agents";
             homepage = "https://github.com/junghan0611/lifetract";

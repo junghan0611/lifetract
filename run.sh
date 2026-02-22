@@ -14,7 +14,7 @@ case "${1:-}" in
         echo "Building lifetract..."
         INSTALL_DIR="${2:-$HOME/.local/bin}"
         mkdir -p "$INSTALL_DIR"
-        (cd "$SCRIPT_DIR/lifetract" && go build -o "$INSTALL_DIR/lifetract" .)
+        (cd "$SCRIPT_DIR/lifetract" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/lifetract" .)
         echo "Installed: $INSTALL_DIR/lifetract"
         # Install skill to pi-skills
         SKILL_DIR="$HOME/.pi/agent/skills/pi-skills/lifetract"
