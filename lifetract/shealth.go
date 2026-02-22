@@ -98,6 +98,20 @@ func timeStr(t time.Time) string {
 	return t.Format("15:04")
 }
 
+// denoteID returns Denote identifier "YYYYMMDDTHHMMSS" from a time.
+func denoteID(t time.Time) string {
+	return t.Format("20060102T150405")
+}
+
+// denoteDayID returns Denote identifier for a date "YYYYMMDDT000000".
+func denoteDayID(dateStr string) string {
+	t, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return dateStr // fallback
+	}
+	return t.Format("20060102T000000")
+}
+
 // cutoffTime returns time N days ago from now.
 func cutoffTime(days int) time.Time {
 	return time.Now().AddDate(0, 0, -days)
@@ -106,6 +120,7 @@ func cutoffTime(days int) time.Time {
 // --- Sleep ---
 
 type SleepRecord struct {
+	ID            string             `json:"id"`
 	Date          string             `json:"date"`
 	Start         string             `json:"start"`
 	End           string             `json:"end"`
@@ -165,6 +180,7 @@ func parseSleepRecords(cfg *Config, days int) ([]SleepRecord, error) {
 		}
 
 		sr := SleepRecord{
+			ID:            denoteID(start),
 			Date:          dateStr(start),
 			Start:         timeStr(start),
 			End:           timeStr(end),
@@ -296,6 +312,7 @@ func loadSleepStages(cfg *Config) map[string]*SleepStages {
 // --- Steps ---
 
 type StepRecord struct {
+	ID    string `json:"id"`
 	Date  string `json:"date"`
 	Steps int    `json:"steps"`
 }
@@ -399,7 +416,7 @@ func parseStepRecordsFromPedometer(cfg *Config, days int) ([]StepRecord, error) 
 func stepsMapToSorted(m map[string]int) []StepRecord {
 	var results []StepRecord
 	for date, steps := range m {
-		results = append(results, StepRecord{Date: date, Steps: steps})
+		results = append(results, StepRecord{ID: denoteDayID(date), Date: date, Steps: steps})
 	}
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Date > results[j].Date
@@ -410,6 +427,7 @@ func stepsMapToSorted(m map[string]int) []StepRecord {
 // --- Heart Rate ---
 
 type HeartRecord struct {
+	ID      string  `json:"id"`
 	Date    string  `json:"date"`
 	AvgHR   float64 `json:"avg_hr"`
 	MinHR   int     `json:"min_hr"`
@@ -477,6 +495,7 @@ func parseHeartRecords(cfg *Config, days int) ([]HeartRecord, error) {
 	var results []HeartRecord
 	for date, d := range daily {
 		results = append(results, HeartRecord{
+			ID:      denoteDayID(date),
 			Date:    date,
 			AvgHR:   math.Round(d.sum/float64(d.samples)*10) / 10,
 			MinHR:   d.min,
@@ -493,6 +512,7 @@ func parseHeartRecords(cfg *Config, days int) ([]HeartRecord, error) {
 // --- Stress ---
 
 type StressRecord struct {
+	ID       string  `json:"id"`
 	Date     string  `json:"date"`
 	AvgScore float64 `json:"avg_score"`
 	MinScore int     `json:"min_score"`
@@ -560,6 +580,7 @@ func parseStressRecords(cfg *Config, days int) ([]StressRecord, error) {
 	var results []StressRecord
 	for date, d := range daily {
 		results = append(results, StressRecord{
+			ID:       denoteDayID(date),
 			Date:     date,
 			AvgScore: math.Round(d.sum/float64(d.samples)*10) / 10,
 			MinScore: d.min,
@@ -576,6 +597,7 @@ func parseStressRecords(cfg *Config, days int) ([]StressRecord, error) {
 // --- Exercise ---
 
 type ExerciseRecord struct {
+	ID              string  `json:"id"`
 	Date            string  `json:"date"`
 	Type            string  `json:"type"`
 	DurationMinutes float64 `json:"duration_minutes"`
@@ -658,6 +680,7 @@ func parseExerciseRecords(cfg *Config, days int) ([]ExerciseRecord, error) {
 		}
 
 		er := ExerciseRecord{
+			ID:              denoteID(start),
 			Date:            dateStr(start),
 			Type:            typeName,
 			DurationMinutes: math.Round(durMin*10) / 10,

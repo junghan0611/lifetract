@@ -54,6 +54,48 @@ func TestParseFlags(t *testing.T) {
 	}
 }
 
+func TestDenoteID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"2025-10-04", "20251004T000000"},
+		{"2021-01-21", "20210121T000000"},
+		{"2017-12-06", "20171206T000000"},
+	}
+	for _, tt := range tests {
+		got := denoteDayID(tt.input)
+		if got != tt.want {
+			t.Errorf("denoteDayID(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestDenoteIDFromTime(t *testing.T) {
+	ts, _ := parseShealthTime("2025-10-04 21:21:00.000")
+	got := denoteID(ts)
+	if got != "20251004T212100" {
+		t.Errorf("denoteID() = %q, want 20251004T212100", got)
+	}
+}
+
+func TestParseDenoteID(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantErr bool
+	}{
+		{"20251004T000000", false},
+		{"20251004T212100", false},
+		{"invalid", true},
+	}
+	for _, tt := range tests {
+		_, err := parseDenoteID(tt.input)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("parseDenoteID(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+		}
+	}
+}
+
 func TestFlagDays(t *testing.T) {
 	tests := []struct {
 		flags map[string]string

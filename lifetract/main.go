@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const version = "0.1.0"
@@ -19,6 +20,7 @@ Commands:
   status                 Show data source availability and stats
   today                  Today's unified health + time summary
   timeline [--days N]    Date-indexed unified view (denotecli-compatible)
+  read <denote-id>       Read by Denote ID (YYYYMMDDT000000 or YYYY-MM-DD)
   sleep   [--days N]     Sleep session analysis
   steps   [--days N]     Daily step counts
   heart   [--days N]     Heart rate statistics
@@ -52,9 +54,15 @@ func main() {
 		return
 	}
 
-	// Parse flags
-	flags := parseFlags(os.Args[2:])
+	// Parse flags and positional args
+	args := os.Args[2:]
+	flags := parseFlags(args)
 	cfg := newConfig(flags)
+
+	// Extract positional arg (for read command)
+	if len(args) > 0 && !strings.HasPrefix(args[0], "--") {
+		cfg.ReadID = args[0]
+	}
 
 	var result interface{}
 	var err error
@@ -66,6 +74,8 @@ func main() {
 		result, err = cmdToday(cfg)
 	case "timeline":
 		result, err = cmdTimeline(cfg)
+	case "read":
+		result, err = cmdRead(cfg)
 	case "sleep":
 		result, err = cmdSleep(cfg)
 	case "steps":

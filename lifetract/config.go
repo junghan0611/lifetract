@@ -13,6 +13,7 @@ type Config struct {
 	Days           int
 	Summary        bool
 	Category       string
+	ReadID         string // Denote ID for read command
 }
 
 func newConfig(flags map[string]string) *Config {

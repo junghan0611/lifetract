@@ -9,6 +9,7 @@ import (
 // This enables cross-querying: denotecli shows what you wrote,
 // lifetract shows what you did/measured on the same day.
 type TimelineEntry struct {
+	ID       string          `json:"id"`
 	Date     string          `json:"date"`
 	Health   *HealthMetrics  `json:"health,omitempty"`
 	Time     *TimeMetrics    `json:"time,omitempty"`
@@ -53,7 +54,7 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 		if e, ok := entries[date]; ok {
 			return e
 		}
-		e := &TimelineEntry{Date: date}
+		e := &TimelineEntry{ID: denoteDayID(date), Date: date}
 		entries[date] = e
 		return e
 	}
