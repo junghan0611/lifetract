@@ -1,0 +1,25 @@
+# Binary
+lifetract/lifetract
+
+# Emacs
+*~
+\#*\#
+.\#*
+*.elc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Temp
+temp/
+
+.claude
+.agent-shell
