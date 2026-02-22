@@ -27,6 +27,8 @@ Commands:
   stress  [--days N]     Stress level analysis
   exercise [--days N]    Exercise sessions
   time    [--days N]     Time category analysis (aTimeLogger)
+  import                 Show import manifest (CSV+SQLite → lifetract.db)
+  export                 Show export plan (public-safe DB)
 
 Flags:
   --days N               Days to look back (default: 7)
@@ -88,6 +90,10 @@ func main() {
 		result, err = cmdExercise(cfg)
 	case "time":
 		result, err = cmdTime(cfg)
+	case "import":
+		result, err = cmdImport(cfg)
+	case "export":
+		result, err = cmdExport(cfg)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		usage()

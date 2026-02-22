@@ -496,6 +496,86 @@ func TestCmdTime(t *testing.T) {
 	}
 }
 
+// --- SKILL.md: import ---
+
+func TestCmdImport(t *testing.T) {
+	cfg := testConfig(9999)
+	result, err := cmdImport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, ok := result.(*ImportManifest)
+	if !ok {
+		t.Fatal("expected *ImportManifest")
+	}
+
+	if len(m.Sources) == 0 {
+		t.Error("sources should not be empty")
+	}
+	if m.TotalRows == 0 {
+		t.Error("total_rows should be > 0")
+	}
+	if m.CategoryPolicy == nil {
+		t.Error("category_policy should not be nil")
+	}
+	if len(m.CategoryPolicy.Traction) == 0 {
+		t.Error("traction categories should not be empty")
+	}
+}
+
+// --- SKILL.md: export ---
+
+func TestCmdExport(t *testing.T) {
+	cfg := testConfig(9999)
+	result, err := cmdExport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, ok := result.(*ExportPlan)
+	if !ok {
+		t.Fatal("expected *ExportPlan")
+	}
+	if len(p.Remove) == 0 {
+		t.Error("remove list should not be empty")
+	}
+	if len(p.Keep) == 0 {
+		t.Error("keep list should not be empty")
+	}
+	if p.Estimated.OriginalMB == 0 {
+		t.Error("original size should not be 0")
+	}
+}
+
+// --- Category Policy ---
+
+func TestDefaultCategoryPolicy(t *testing.T) {
+	p := defaultCategoryPolicy()
+
+	// All 18 aTimeLogger categories should be covered
+	all := map[string]bool{}
+	for _, c := range p.Traction {
+		all[c] = true
+	}
+	for _, c := range p.Maintenance {
+		all[c] = true
+	}
+	for _, c := range p.Distraction {
+		all[c] = true
+	}
+	for _, c := range p.Family {
+		all[c] = true
+	}
+
+	expected := []string{"본짓", "수면", "딴짓", "가족", "독서", "운동", "식사"}
+	for _, e := range expected {
+		if !all[e] {
+			t.Errorf("category %q not found in policy", e)
+		}
+	}
+}
+
 // --- JSON output format ---
 
 func TestJSONOutputFormat(t *testing.T) {
