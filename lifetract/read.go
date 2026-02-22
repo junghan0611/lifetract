@@ -22,7 +22,6 @@ func cmdRead(cfg *Config) (interface{}, error) {
 		id = denoteDayID(id)
 	}
 
-	// Parse the ID to get a date for filtering
 	t, err := parseDenoteID(id)
 	if err != nil {
 		return nil, fmt.Errorf("invalid denote ID %q: %w", id, err)
@@ -30,22 +29,27 @@ func cmdRead(cfg *Config) (interface{}, error) {
 
 	isDayID := strings.HasSuffix(id, "T000000")
 
-	if isDayID {
-		return readDay(cfg, t)
+	if dbExists(cfg) {
+		if isDayID {
+			return dbQueryDay(cfg, t)
+		}
+		return dbQueryEvent(cfg, t, id)
 	}
-	return readEvent(cfg, t, id)
+
+	// CSV fallback
+	if isDayID {
+		return csvReadDay(cfg, t)
+	}
+	return csvReadEvent(cfg, t, id)
 }
 
-// parseDenoteID → helpers.go
-
-// readDay returns the full timeline entry for a specific day.
-func readDay(cfg *Config, day time.Time) (interface{}, error) {
+// csvReadDay returns the full timeline entry for a specific day (CSV mode).
+func csvReadDay(cfg *Config, day time.Time) (interface{}, error) {
 	dateS := dateStr(day)
 	dayID := denoteDayID(dateS)
 
-	// Load all data for a wide window to ensure we catch the day
 	origDays := cfg.Days
-	cfg.Days = 9999 // load all
+	cfg.Days = 9999
 
 	sleepRecs, _ := parseSleepRecords(cfg, cfg.Days)
 	stepRecs, _ := parseStepRecords(cfg, cfg.Days)
@@ -57,18 +61,13 @@ func readDay(cfg *Config, day time.Time) (interface{}, error) {
 
 	entry := &TimelineEntry{ID: dayID, Date: dateS}
 
-	// Steps
 	for _, r := range stepRecs {
 		if r.Date == dateS {
-			if entry.Health == nil {
-				entry.Health = &HealthMetrics{}
-			}
-			entry.Health.Steps = r.Steps
+			ensureTimelineHealth(entry).Steps = r.Steps
 			break
 		}
 	}
 
-	// Sleep — collect all sessions for the day
 	var sleepSessions []SleepRecord
 	for _, r := range sleepRecs {
 		if r.Date == dateS {
@@ -76,38 +75,28 @@ func readDay(cfg *Config, day time.Time) (interface{}, error) {
 		}
 	}
 	if len(sleepSessions) > 0 {
-		if entry.Health == nil {
-			entry.Health = &HealthMetrics{}
-		}
-		entry.Health.SleepHours = sleepSessions[0].DurationHours
-		entry.Health.SleepScore = sleepSessions[0].SleepScore
+		h := ensureTimelineHealth(entry)
+		h.SleepHours = sleepSessions[0].DurationHours
+		h.SleepScore = sleepSessions[0].SleepScore
 	}
 
-	// Heart rate
 	for _, r := range heartRecs {
 		if r.Date == dateS {
-			if entry.Health == nil {
-				entry.Health = &HealthMetrics{}
-			}
-			entry.Health.AvgHR = r.AvgHR
-			entry.Health.MinHR = r.MinHR
-			entry.Health.MaxHR = r.MaxHR
+			h := ensureTimelineHealth(entry)
+			h.AvgHR = r.AvgHR
+			h.MinHR = r.MinHR
+			h.MaxHR = r.MaxHR
 			break
 		}
 	}
 
-	// Stress
 	for _, r := range stressRecs {
 		if r.Date == dateS {
-			if entry.Health == nil {
-				entry.Health = &HealthMetrics{}
-			}
-			entry.Health.StressAvg = r.AvgScore
+			ensureTimelineHealth(entry).StressAvg = r.AvgScore
 			break
 		}
 	}
 
-	// Exercise
 	for _, r := range exerciseRecs {
 		if r.Date == dateS {
 			entry.Exercise = append(entry.Exercise, ExerciseBrief{
@@ -118,28 +107,21 @@ func readDay(cfg *Config, day time.Time) (interface{}, error) {
 		}
 	}
 
-	// Also include sleep sessions as linked events
 	type DayDetail struct {
 		*TimelineEntry
 		SleepSessions []SleepRecord `json:"sleep_sessions,omitempty"`
 	}
-
 	if len(sleepSessions) > 0 {
-		return &DayDetail{
-			TimelineEntry: entry,
-			SleepSessions: sleepSessions,
-		}, nil
+		return &DayDetail{TimelineEntry: entry, SleepSessions: sleepSessions}, nil
 	}
-
 	return entry, nil
 }
 
-// readEvent finds a specific event (sleep/exercise) by exact Denote ID.
-func readEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
+// csvReadEvent finds a specific event by exact Denote ID (CSV mode).
+func csvReadEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
 	origDays := cfg.Days
 	cfg.Days = 9999
 
-	// Try sleep
 	sleepRecs, _ := parseSleepRecords(cfg, cfg.Days)
 	for _, r := range sleepRecs {
 		if r.ID == id {
@@ -148,7 +130,6 @@ func readEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
 		}
 	}
 
-	// Try exercise
 	exerciseRecs, _ := parseExerciseRecords(cfg, cfg.Days)
 	for _, r := range exerciseRecs {
 		if r.ID == id {

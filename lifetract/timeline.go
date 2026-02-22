@@ -5,9 +5,6 @@ import (
 )
 
 // TimelineEntry represents a single day's unified life data.
-// Date format matches denotecli journal: "YYYY-MM-DD"
-// This enables cross-querying: denotecli shows what you wrote,
-// lifetract shows what you did/measured on the same day.
 type TimelineEntry struct {
 	ID       string          `json:"id"`
 	Date     string          `json:"date"`
@@ -38,9 +35,15 @@ type ExerciseBrief struct {
 }
 
 func cmdTimeline(cfg *Config) (interface{}, error) {
-	days := cfg.Days
+	if dbExists(cfg) {
+		return dbQueryTimeline(cfg, cfg.Days)
+	}
+	return csvTimeline(cfg)
+}
 
-	// Collect all data sources in parallel-ish
+// csvTimeline builds timeline from CSV parsing (fallback).
+func csvTimeline(cfg *Config) (interface{}, error) {
+	days := cfg.Days
 	sleepRecs, _ := parseSleepRecords(cfg, days)
 	stepRecs, _ := parseStepRecords(cfg, days)
 	heartRecs, _ := parseHeartRecords(cfg, days)
@@ -48,7 +51,14 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 	exerciseRecs, _ := parseExerciseRecords(cfg, days)
 	timeRecs, _ := parseTimeRecords(cfg, days)
 
-	// Build date-indexed maps
+	return buildTimeline(stepRecs, sleepRecs, heartRecs, stressRecs, exerciseRecs, timeRecs), nil
+}
+
+// buildTimeline assembles timeline entries from parsed records.
+func buildTimeline(stepRecs []StepRecord, sleepRecs []SleepRecord,
+	heartRecs []HeartRecord, stressRecs []StressRecord,
+	exerciseRecs []ExerciseRecord, timeRecs []TimeRecord) []TimelineEntry {
+
 	entries := make(map[string]*TimelineEntry)
 	ensureEntry := func(date string) *TimelineEntry {
 		if e, ok := entries[date]; ok {
@@ -66,13 +76,10 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 		return e.Health
 	}
 
-	// Steps
 	for _, r := range stepRecs {
-		h := ensureHealth(r.Date)
-		h.Steps = r.Steps
+		ensureHealth(r.Date).Steps = r.Steps
 	}
 
-	// Sleep — take first (most recent) session per date
 	sleepByDate := make(map[string]SleepRecord)
 	for _, r := range sleepRecs {
 		if _, exists := sleepByDate[r.Date]; !exists {
@@ -85,7 +92,6 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 		h.SleepScore = r.SleepScore
 	}
 
-	// Heart rate
 	for _, r := range heartRecs {
 		h := ensureHealth(r.Date)
 		h.AvgHR = r.AvgHR
@@ -93,13 +99,10 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 		h.MaxHR = r.MaxHR
 	}
 
-	// Stress
 	for _, r := range stressRecs {
-		h := ensureHealth(r.Date)
-		h.StressAvg = r.AvgScore
+		ensureHealth(r.Date).StressAvg = r.AvgScore
 	}
 
-	// Exercise
 	for _, r := range exerciseRecs {
 		e := ensureEntry(r.Date)
 		e.Exercise = append(e.Exercise, ExerciseBrief{
@@ -109,7 +112,6 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 		})
 	}
 
-	// Time tracking (aTimeLogger)
 	for _, r := range timeRecs {
 		e := ensureEntry(r.Date)
 		totalMin := 0.0
@@ -122,7 +124,6 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 		}
 	}
 
-	// Convert to sorted slice
 	var result []TimelineEntry
 	for _, e := range entries {
 		result = append(result, *e)
@@ -130,6 +131,5 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Date > result[j].Date
 	})
-
-	return result, nil
+	return result
 }

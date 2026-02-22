@@ -10,6 +10,7 @@ import (
 type StatusResult struct {
 	SamsungHealth *ShealthStatus     `json:"samsung_health"`
 	ATimeLogger   *ATimeLoggerStatus `json:"atimelogger"`
+	Database      *DBStatus          `json:"database,omitempty"`
 }
 
 type ShealthStatus struct {
@@ -17,7 +18,6 @@ type ShealthStatus struct {
 	Available bool     `json:"available"`
 	CSVCount  int      `json:"csv_count"`
 	AllDirs   []string `json:"all_dirs,omitempty"`
-	DateRange []string `json:"date_range,omitempty"`
 }
 
 type ATimeLoggerStatus struct {
@@ -25,6 +25,13 @@ type ATimeLoggerStatus struct {
 	Available bool    `json:"available"`
 	SizeMB    float64 `json:"size_mb,omitempty"`
 	Note      string  `json:"note,omitempty"`
+}
+
+type DBStatus struct {
+	Path      string  `json:"path"`
+	Available bool    `json:"available"`
+	SizeMB    float64 `json:"size_mb,omitempty"`
+	Mode      string  `json:"mode"` // "db" or "csv"
 }
 
 func cmdStatus(cfg *Config) (interface{}, error) {
@@ -40,9 +47,19 @@ func cmdStatus(cfg *Config) (interface{}, error) {
 
 	atl := getATimeLoggerStatus(cfg)
 
+	dbSt := &DBStatus{Path: dbPath(cfg)}
+	if info, err := os.Stat(dbPath(cfg)); err == nil {
+		dbSt.Available = true
+		dbSt.SizeMB = float64(info.Size()) / (1024 * 1024)
+		dbSt.Mode = "db"
+	} else {
+		dbSt.Mode = "csv"
+	}
+
 	return &StatusResult{
 		SamsungHealth: sh,
 		ATimeLogger:   &atl,
+		Database:      dbSt,
 	}, nil
 }
 
@@ -55,7 +72,6 @@ func getATimeLoggerStatus(cfg *Config) ATimeLoggerStatus {
 			Note:      "database.db3 not found",
 		}
 	}
-
 	return ATimeLoggerStatus{
 		Path:      cfg.ATimeLoggerDB,
 		Available: true,
@@ -72,6 +88,7 @@ type TodayResult struct {
 	AvgHR          float64        `json:"avg_hr"`
 	StressAvg      float64        `json:"stress_avg"`
 	TimeCategories []TimeCategory `json:"time_categories,omitempty"`
+	Source         string         `json:"source"` // "db" or "csv"
 }
 
 func cmdToday(cfg *Config) (interface{}, error) {
@@ -79,20 +96,37 @@ func cmdToday(cfg *Config) (interface{}, error) {
 		Date: dateStr(cutoffTime(0).AddDate(0, 0, 1)),
 	}
 
-	if steps, err := parseStepRecords(cfg, 1); err == nil && len(steps) > 0 {
-		result.Steps = steps[0].Steps
-	}
-	if sleeps, err := parseSleepRecords(cfg, 2); err == nil && len(sleeps) > 0 {
-		result.SleepHours = sleeps[0].DurationHours
-	}
-	if hearts, err := parseHeartRecords(cfg, 1); err == nil && len(hearts) > 0 {
-		result.AvgHR = hearts[0].AvgHR
-	}
-	if stresses, err := parseStressRecords(cfg, 1); err == nil && len(stresses) > 0 {
-		result.StressAvg = stresses[0].AvgScore
-	}
-	if times, _ := parseTimeRecords(cfg, 1); len(times) > 0 {
-		result.TimeCategories = times[0].Categories
+	if dbExists(cfg) {
+		result.Source = "db"
+		if steps, err := dbQuerySteps(cfg, 1); err == nil && len(steps) > 0 {
+			result.Steps = steps[0].Steps
+		}
+		if sleeps, err := dbQuerySleep(cfg, 2); err == nil && len(sleeps) > 0 {
+			result.SleepHours = sleeps[0].DurationHours
+		}
+		if hearts, err := dbQueryHeart(cfg, 1); err == nil && len(hearts) > 0 {
+			result.AvgHR = hearts[0].AvgHR
+		}
+		if stresses, err := dbQueryStress(cfg, 1); err == nil && len(stresses) > 0 {
+			result.StressAvg = stresses[0].AvgScore
+		}
+		if times, err := dbQueryTime(cfg, 1); err == nil && len(times) > 0 {
+			result.TimeCategories = times[0].Categories
+		}
+	} else {
+		result.Source = "csv"
+		if steps, err := parseStepRecords(cfg, 1); err == nil && len(steps) > 0 {
+			result.Steps = steps[0].Steps
+		}
+		if sleeps, err := parseSleepRecords(cfg, 2); err == nil && len(sleeps) > 0 {
+			result.SleepHours = sleeps[0].DurationHours
+		}
+		if hearts, err := parseHeartRecords(cfg, 1); err == nil && len(hearts) > 0 {
+			result.AvgHR = hearts[0].AvgHR
+		}
+		if stresses, err := parseStressRecords(cfg, 1); err == nil && len(stresses) > 0 {
+			result.StressAvg = stresses[0].AvgScore
+		}
 	}
 
 	return result, nil
@@ -101,7 +135,14 @@ func cmdToday(cfg *Config) (interface{}, error) {
 // --- sleep ---
 
 func cmdSleep(cfg *Config) (interface{}, error) {
-	records, err := parseSleepRecords(cfg, cfg.Days)
+	var records []SleepRecord
+	var err error
+
+	if dbExists(cfg) {
+		records, err = dbQuerySleep(cfg, cfg.Days)
+	} else {
+		records, err = parseSleepRecords(cfg, cfg.Days)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -160,22 +201,45 @@ func sleepSummary(records []SleepRecord) *SleepSummary {
 // --- steps/heart/stress/exercise/time ---
 
 func cmdSteps(cfg *Config) (interface{}, error) {
+	if dbExists(cfg) {
+		return dbQuerySteps(cfg, cfg.Days)
+	}
 	return parseStepRecords(cfg, cfg.Days)
 }
 
 func cmdHeart(cfg *Config) (interface{}, error) {
+	if dbExists(cfg) {
+		return dbQueryHeart(cfg, cfg.Days)
+	}
 	return parseHeartRecords(cfg, cfg.Days)
 }
 
 func cmdStress(cfg *Config) (interface{}, error) {
+	if dbExists(cfg) {
+		return dbQueryStress(cfg, cfg.Days)
+	}
 	return parseStressRecords(cfg, cfg.Days)
 }
 
 func cmdExercise(cfg *Config) (interface{}, error) {
+	if dbExists(cfg) {
+		return dbQueryExercise(cfg, cfg.Days)
+	}
 	return parseExerciseRecords(cfg, cfg.Days)
 }
 
 func cmdTime(cfg *Config) (interface{}, error) {
+	if dbExists(cfg) {
+		records, err := dbQueryTime(cfg, cfg.Days)
+		if err != nil {
+			return nil, err
+		}
+		if len(records) == 0 {
+			return map[string]string{"note": "no aTimeLogger data in DB for the given period"}, nil
+		}
+		return records, nil
+	}
+
 	status := getATimeLoggerStatus(cfg)
 	if !status.Available {
 		return map[string]string{
@@ -184,17 +248,7 @@ func cmdTime(cfg *Config) (interface{}, error) {
 		}, nil
 	}
 
-	records, err := parseTimeRecords(cfg, cfg.Days)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(records) == 0 {
-		return map[string]string{
-			"note": "aTimeLogger SQLite parser not yet implemented (Phase 2)",
-			"db":   cfg.ATimeLoggerDB,
-		}, nil
-	}
-
-	return records, nil
+	return map[string]string{
+		"note": "run 'lifetract import --exec' first to enable DB queries",
+	}, nil
 }
