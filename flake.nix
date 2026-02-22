@@ -15,7 +15,8 @@
           pname = "lifetract";
           version = "0.1.0";
           src = ./lifetract;
-          vendorHash = null; # stdlib only (Phase 1)
+          vendorHash = "sha256-NK/u+NdEhDKa+/C77dVEYwaJWZChgkV8oJugaBlfcLk=";
+          proxyVendor = true;
 
           # Static build — Docker/container에서 glibc 동적 링크 불가
           env.CGO_ENABLED = 0;

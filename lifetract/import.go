@@ -12,9 +12,13 @@ import (
 
 // cmdImport converts raw Samsung Health CSVs + aTimeLogger SQLite
 // into a single lifetract.db SQLite database.
-// Phase 1: Generates a JSON manifest of what would be imported.
-// Phase 2: Will produce actual SQLite (needs modernc.org/sqlite).
+// Without --exec: shows manifest (dry run).
+// With --exec: performs actual import.
 func cmdImport(cfg *Config) (interface{}, error) {
+	if cfg.Exec {
+		return execImport(cfg)
+	}
+
 	manifest := &ImportManifest{
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Sources:   []ImportSource{},

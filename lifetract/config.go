@@ -16,6 +16,7 @@ type Config struct {
 	Summary        bool
 	Category       string
 	ReadID         string   // Denote ID for read command
+	Exec           bool     // Execute mode (for import)
 }
 
 func newConfig(flags map[string]string) *Config {

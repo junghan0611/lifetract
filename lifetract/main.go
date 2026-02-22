@@ -66,6 +66,11 @@ func main() {
 		cfg.ReadID = args[0]
 	}
 
+	// --exec flag
+	if flags["exec"] == "true" {
+		cfg.Exec = true
+	}
+
 	var result interface{}
 	var err error
 
@@ -120,7 +125,7 @@ func parseFlags(args []string) map[string]string {
 	for i := 0; i < len(args); i++ {
 		if len(args[i]) > 2 && args[i][:2] == "--" {
 			key := args[i][2:]
-			if key == "summary" {
+			if key == "summary" || key == "exec" {
 				flags[key] = "true"
 				continue
 			}
