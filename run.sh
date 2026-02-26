@@ -16,13 +16,7 @@ case "${1:-}" in
         mkdir -p "$INSTALL_DIR"
         (cd "$SCRIPT_DIR/lifetract" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/lifetract" .)
         echo "Installed: $INSTALL_DIR/lifetract"
-        # Install skill to pi-skills
-        SKILL_DIR="$HOME/.pi/agent/skills/pi-skills/lifetract"
-        if [[ -d "$HOME/.pi/agent/skills/pi-skills" ]]; then
-            mkdir -p "$SKILL_DIR"
-            cp "$SCRIPT_DIR/SKILL.md" "$SKILL_DIR/SKILL.md"
-            echo "Skill installed: $SKILL_DIR/SKILL.md"
-        fi
+        echo "Skill docs: https://github.com/junghan0611/pi-skills/tree/main/lifetract"
         ;;
     test)
         echo "Running tests..."

@@ -4,6 +4,8 @@
 
 > Go · modernc.org/sqlite · Single static binary · JSON output · Korean-native
 
+> **AI Agent Skill**: [pi-skills/lifetract](https://github.com/junghan0611/pi-skills/tree/main/lifetract) — 에이전트용 스킬 문서는 pi-skills 리포에서 관리합니다.
+
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
 ---
