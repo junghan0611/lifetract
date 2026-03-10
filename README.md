@@ -1,10 +1,10 @@
 # lifetract
 
-**Life + Traction — 삶의 정량 데이터를 AI 에이전트가 조회하는 CLI**
+**Life + Traction — A CLI that lets AI agents query your health and time-tracking data.**
 
-> Go · modernc.org/sqlite · Single static binary · JSON output · Korean-native
+> Go · modernc.org/sqlite · Single static binary · JSON output
 
-> **AI Agent Skill**: [pi-skills/lifetract](https://github.com/junghan0611/pi-skills/tree/main/lifetract) — 에이전트용 스킬 문서는 pi-skills 리포에서 관리합니다.
+> **AI Agent Skill**: [pi-skills/lifetract](https://github.com/junghan0611/pi-skills/tree/main/lifetract)
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
@@ -12,17 +12,18 @@
 
 ## What This Does
 
-Samsung Health CSV(8종) + aTimeLogger SQLite(18 카테고리)를 단일 SQLite DB(`lifetract.db`)로 통합.
-AI 에이전트(Claude Code, pi 등)가 JSON으로 건강·시간 데이터를 즉시 조회.
+Unifies **Samsung Health** CSV exports (8 types) and **aTimeLogger** SQLite (18 categories) into a single SQLite database (`lifetract.db`). AI agents query health and time data via JSON — sleep, heart rate, steps, stress, exercise, weight, HRV, and how you spend your hours.
 
-모든 레코드에 Denote ID(`YYYYMMDDTHHMMSS`)를 부여 → [denotecli](https://github.com/junghan0611/denotecli)와 같은 시간축으로 교차 조회 가능.
+Every record carries a [Denote ID](https://protesilaos.com/emacs/denote) (`YYYYMMDDTHHMMSS`), enabling cross-referencing with [denotecli](https://github.com/junghan0611/denotecli) on the same time axis.
+
+Samsung Health and aTimeLogger are widely-used apps with standard export formats. **lifetract is a general-purpose tool** — anyone using these apps can use it. Data itself is private; public dataset is planned separately.
 
 ```bash
-lifetract import --exec             # CSV+aTimeLogger → lifetract.db (1.5초, 33MB)
-lifetract today                     # 오늘 통합 요약
-lifetract read 2025-10-04           # 특정 날짜 종합 (건강+시간추적)
-lifetract timeline --days 30        # 30일 횡단 뷰
-lifetract time --days 30            # aTimeLogger 시간 카테고리
+./run.sh update                     # Place new data + rebuild DB (one step)
+lifetract today                     # Today's unified summary
+lifetract read 2025-10-04           # Full day: health + time tracking
+lifetract timeline --days 30        # 30-day cross-sectional view
+lifetract time --days 30            # Time category analysis
 ```
 
 ---
@@ -32,102 +33,115 @@ lifetract time --days 30            # aTimeLogger 시간 카테고리
 ```bash
 git clone https://github.com/junghan0611/lifetract.git
 cd lifetract
-./run.sh build    # → ~/.local/bin/lifetract + pi-skills SKILL.md
+./run.sh build    # → ~/.local/bin/lifetract
 ```
 
-Go 1.21+ 필요. Nix 사용자: `nix build` (CGO_ENABLED=0 정적 빌드).
+Requires Go 1.21+. Nix users: `nix build` (CGO_ENABLED=0 static binary).
+
+### Updating Data
+
+Export Samsung Health + aTimeLogger backup from your phone into a date folder, then one command:
+
+```bash
+# Put exports in self-tracking-data/YYYYMMDD/, then:
+./run.sh update
+```
+
+Automatically: moves Samsung Health folder → replaces aTimeLogger DB → rebuilds `lifetract.db`.
 
 ---
 
 ## Architecture
 
 ```
-lifetract import --exec
-  Samsung Health CSVs (77개, 942MB) ─┐
-  aTimeLogger SQLite (5MB) ──────────┼→ lifetract.db (33MB, 183,635 rows)
-                                     │
-lifetract <command>                  │
-  DB 있음? → SQLite 쿼리 (~90ms) ────┘
-  DB 없음? → CSV 직접 파싱 (~300ms, fallback)
+./run.sh update (or lifetract import --exec)
+  Samsung Health CSVs ────────────┐
+  aTimeLogger SQLite ─────────────┼→ lifetract.db → JSON API
+                                  │
+lifetract <command>               │
+  DB exists? → SQLite query (~90ms)
+  No DB?     → CSV fallback (~300ms)
 ```
 
-### DB 테이블
+### DB Tables
 
-| 테이블 | 소스 | 레코드 |
-|--------|------|--------|
-| `sleep` | Samsung Health | 4,212 |
-| `sleep_stage` | Samsung Health | 71,245 |
-| `heart_rate` | Samsung Health | 58,701 |
-| `steps_daily` | Samsung Health | 9,227 |
-| `stress` | Samsung Health | 23,627 |
-| `exercise` | Samsung Health | 2,180 |
+| Table | Source | Rows |
+|-------|--------|------|
+| `sleep` | Samsung Health | 4,489 |
+| `sleep_stage` | Samsung Health | 78,591 |
+| `heart_rate` | Samsung Health | 62,036 |
+| `steps_daily` | Samsung Health | 9,692 |
+| `stress` | Samsung Health | 25,768 |
+| `exercise` | Samsung Health | 2,195 |
 | `weight` | Samsung Health | 283 |
 | `hrv` | Samsung Health | 1,058 |
 | `atl_category` | aTimeLogger | 18 |
-| `atl_interval` | aTimeLogger | 13,102 |
+| `atl_interval` | aTimeLogger | 13,918 |
+
+**Total: 198,030 rows, 36MB** (as of 2026-03-10)
 
 ---
 
 ## Commands
 
-| 커맨드 | 설명 |
-|--------|------|
-| `status` | 데이터 소스 + DB 상태 |
-| `import [--exec]` | DB 생성 (dry-run / 실행) |
-| `today` | 오늘 통합 요약 |
-| `read <id>` | Denote ID로 조회 (일별/이벤트별) |
-| `timeline [--days N]` | 날짜별 횡단 뷰 |
-| `sleep [--days N] [--summary]` | 수면 분석 |
-| `steps [--days N]` | 걸음 수 |
-| `heart [--days N]` | 심박 추이 |
-| `stress [--days N]` | 스트레스 |
-| `exercise [--days N]` | 운동 세션 |
-| `time [--days N] [--category X]` | aTimeLogger 시간 카테고리 |
-| `export` | 공개용 내보내기 계획 |
+| Command | Description |
+|---------|-------------|
+| `status` | Data source availability and stats |
+| `import [--exec]` | Build DB (dry-run / execute) |
+| `today` | Today's unified health + time summary |
+| `read <id>` | Query by Denote ID (day or event level) |
+| `timeline [--days N]` | Date-indexed cross-sectional view |
+| `sleep [--days N] [--summary]` | Sleep session analysis |
+| `steps [--days N]` | Daily step counts |
+| `heart [--days N]` | Heart rate trends |
+| `stress [--days N]` | Stress levels |
+| `exercise [--days N]` | Exercise sessions |
+| `time [--days N] [--category X]` | Time category analysis (aTimeLogger) |
+| `export` | Public-safe export plan |
 
 ### Flags
 
-| Flag | Default | 설명 |
-|------|---------|------|
-| `--days N` | 7 | 조회 기간 |
-| `--data-dir DIR` | `~/repos/gh/self-tracking-data` | 데이터 루트 |
-| `--shealth-dir DIR` | 최신 자동감지 | Samsung Health 디렉토리 |
-| `--summary` | false | 요약 모드 |
-| `--category CAT` | 전체 | 시간 카테고리 필터 |
-| `--exec` | false | import 실행 모드 |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--days N` | 7 | Query period |
+| `--data-dir DIR` | `~/repos/gh/self-tracking-data` | Data root |
+| `--shealth-dir DIR` | Auto-detect latest | Samsung Health directory |
+| `--summary` | false | Summary mode |
+| `--category CAT` | all | Time category filter |
+| `--exec` | false | Execute mode (for import) |
 
 ---
 
 ## Denote ID System
 
 ```
-Day level:   20251004T000000  ← denotecli 저널과 동일
-Event level: 20251004T233000  ← 수면 시작, 운동 시작 등
+Day level:   20251004T000000  ← same key as denotecli journals
+Event level: 20251004T233000  ← individual sleep/exercise events
 ```
 
-교차 조회:
+Cross-reference:
 ```bash
-lifetract read 2025-10-04       # 그날 몸 상태 + 시간 사용
-denotecli search "20251004"     # 그날 적은 노트/저널
+lifetract read 2025-10-04       # Body state + time usage that day
+denotecli search "20251004"     # Notes and journal entries that day
 ```
 
 ---
 
 ## Data Sources
 
-| 소스 | 포맷 | 기간 | 위치 |
-|------|------|------|------|
-| Samsung Health | CSV export (77개) | 2017-03 ~ 2025-10 | `self-tracking-data/samsunghealth_*/` |
-| aTimeLogger | SQLite DB | 2021-10 ~ 2025-10 | `self-tracking-data/atimelogger/database.db3` |
+| Source | Format | Period | Location |
+|--------|--------|--------|----------|
+| Samsung Health | CSV export | 2017-03 – present | `self-tracking-data/samsunghealth_*/` |
+| aTimeLogger | SQLite DB | 2021-10 – present | `self-tracking-data/atimelogger/database.db3` |
 
-### aTimeLogger 카테고리 (Indistractable 분류)
+### aTimeLogger Categories (Indistractable Framework)
 
-| 분류 | 카테고리 |
-|------|----------|
-| **Traction** | 본짓, 독서, 수행, 운동, 걷기, 셀프토크 |
-| **Maintenance** | 수면, 낮잠, 식사, 준비, 집안일, 이동, 쇼핑 |
-| **Distraction** | 딴짓, 유튜브, 짧은휴식, 여가활동 |
-| **Family** | 가족 |
+| Class | Categories |
+|-------|------------|
+| **Traction** | Deep work, Reading, Practice, Exercise, Walking, Self-talk |
+| **Maintenance** | Sleep, Nap, Meals, Prep, Chores, Commute, Shopping |
+| **Distraction** | Distraction, YouTube, Short break, Leisure |
+| **Family** | Family |
 
 ---
 
@@ -135,23 +149,22 @@ denotecli search "20251004"     # 그날 적은 노트/저널
 
 ```
 lifetract/
-├── run.sh              # Build + install + skill deploy
-├── SKILL.md            # AI skill 정의 (pi-skills)
-├── flake.nix           # Nix 패키징 (CGO_ENABLED=0)
-├── docs/plan.md        # 로드맵
+├── run.sh              # Build, test, update
+├── flake.nix           # Nix packaging (CGO_ENABLED=0)
+├── docs/plan.md        # Roadmap
 └── lifetract/          # Go source
-    ├── main.go         # CLI 라우팅
-    ├── config.go       # 설정
-    ├── helpers.go      # 공유 유틸 (denoteID, 시간파서 등)
-    ├── csv.go          # Samsung Health CSV 파서 + 레코드 타입
-    ├── db.go           # SQLite 스키마 + 연결
-    ├── db_query.go     # DB 쿼리 함수
-    ├── import.go       # Import 매니페스트
-    ├── import_exec.go  # CSV→DB 변환 로직
-    ├── export.go       # 공개용 내보내기 + 카테고리 정책
-    ├── query.go        # 조회 커맨드 (DB↔CSV 라우팅)
-    ├── timeline.go     # 타임라인 빌더
-    ├── read.go         # Denote ID 조회
+    ├── main.go         # CLI routing
+    ├── config.go       # Configuration + auto-detect
+    ├── helpers.go      # Shared utils (Denote ID, time parsers)
+    ├── csv.go          # Samsung Health CSV parser + record types
+    ├── db.go           # SQLite schema + connection
+    ├── db_query.go     # DB query functions
+    ├── import.go       # Import manifest
+    ├── import_exec.go  # CSV→DB conversion
+    ├── export.go       # Public-safe export + category policy
+    ├── query.go        # Query commands (DB↔CSV routing)
+    ├── timeline.go     # Timeline builder
+    ├── read.go         # Denote ID lookup
     └── *_test.go       # 47 tests, 68% coverage
 ```
 
@@ -159,10 +172,19 @@ lifetract/
 
 ## Related Projects
 
-| Project | 역할 |
+| Project | Role |
 |---------|------|
-| [denotecli](https://github.com/junghan0611/denotecli) | 정성 데이터 (노트/저널 3,000+) — 같은 Denote ID 축 |
-| [self-tracking-data](https://github.com/junghan0611/self-tracking-data) | 원본 데이터 저장소 |
+| [denotecli](https://github.com/junghan0611/denotecli) | Qualitative data (3,000+ notes/journals) — same Denote ID axis |
+| [self-tracking-data](https://github.com/junghan0611/self-tracking-data) | Raw data repository |
+
+---
+
+## Data Update Log
+
+| Date | Total Rows | DB Size | Samsung Health | aTimeLogger | Notes |
+|------|------------|---------|----------------|-------------|-------|
+| 2025-10-06 | 183,635 | 33MB | ~2025-10 (77 CSVs) | ~2025-10 (13,102 intervals) | Initial build |
+| 2026-03-10 | 198,030 | 36MB | ~2026-03 (78 CSVs) | ~2026-03 (13,918 intervals) | +14,395 rows, 5 months added |
 
 ---
 
