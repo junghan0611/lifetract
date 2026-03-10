@@ -360,6 +360,12 @@ func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
 	dailySteps := make(map[string]int)
 
 	for _, rec := range records {
+		// source_type=-2 is Samsung Health's merged/deduplicated record.
+		// Without this filter, per-device counts get summed → double-counting.
+		if rec["source_type"] != "-2" {
+			continue
+		}
+
 		countStr := rec["count"]
 		if countStr == "" {
 			continue
@@ -380,7 +386,7 @@ func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
 			}
 			date := dateStr(ct)
 			count, _ := strconv.Atoi(countStr)
-			dailySteps[date] += count
+			dailySteps[date] = count // merged record, no summing needed
 			continue
 		}
 
@@ -395,7 +401,7 @@ func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
 
 		date := dateStr(t)
 		count, _ := strconv.Atoi(countStr)
-		dailySteps[date] += count
+		dailySteps[date] = count // merged record, no summing needed
 	}
 
 	return stepsMapToSorted(dailySteps), nil

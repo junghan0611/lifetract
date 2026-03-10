@@ -271,6 +271,13 @@ func importStepsDaily(db *sql.DB, cfg *Config) (int, error) {
 
 	count := 0
 	for _, rec := range records {
+		// source_type=-2 is Samsung Health's merged/deduplicated record
+		// across multiple devices (phone + watch). Other values are per-device
+		// raw counts that would cause double-counting if summed.
+		if rec["source_type"] != "-2" {
+			continue
+		}
+
 		countStr := rec["count"]
 		if countStr == "" {
 			continue
