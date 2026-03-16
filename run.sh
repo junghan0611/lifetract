@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 case "${1:-}" in
     build)
         echo "Building lifetract..."
-        INSTALL_DIR="${2:-$HOME/.local/bin}"
+        INSTALL_DIR="${2:-$SCRIPT_DIR/lifetract}"
         mkdir -p "$INSTALL_DIR"
         (cd "$SCRIPT_DIR/lifetract" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/lifetract" .)
         echo "Installed: $INSTALL_DIR/lifetract"
