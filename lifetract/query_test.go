@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // testConfig returns a Config pointing to testdata fixtures.
@@ -330,6 +331,10 @@ func TestCmdToday(t *testing.T) {
 
 	if tr.Date == "" {
 		t.Error("date should not be empty")
+	}
+	want := time.Now().Format("2006-01-02")
+	if tr.Date != want {
+		t.Errorf("date = %q, want %q (today)", tr.Date, want)
 	}
 	// Today may not match testdata, but the function should not crash
 	_ = tr.Steps

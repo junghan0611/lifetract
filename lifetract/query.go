@@ -93,7 +93,7 @@ type TodayResult struct {
 
 func cmdToday(cfg *Config) (interface{}, error) {
 	result := &TodayResult{
-		Date: dateStr(cutoffTime(0).AddDate(0, 0, 1)),
+		Date: dateStr(cutoffTime(0)),
 	}
 
 	if dbExists(cfg) {
