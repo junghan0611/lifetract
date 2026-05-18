@@ -29,6 +29,7 @@ Commands:
   time    [--days N]     Time category analysis (aTimeLogger)
   import                 Show import manifest (CSV+SQLite → lifetract.db)
   export                 Show export plan (public-safe DB)
+  ha <sub> [arg]         Home Assistant REST (ping|state|states|entities)
 
 Flags:
   --days N               Days to look back (default: 7)
@@ -99,6 +100,16 @@ func main() {
 		result, err = cmdImport(cfg)
 	case "export":
 		result, err = cmdExport(cfg)
+	case "ha":
+		sub := ""
+		haArg := ""
+		if len(args) > 0 && !strings.HasPrefix(args[0], "--") {
+			sub = args[0]
+		}
+		if len(args) > 1 && !strings.HasPrefix(args[1], "--") {
+			haArg = args[1]
+		}
+		result, err = cmdHA(cfg, sub, haArg)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		usage()
