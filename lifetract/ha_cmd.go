@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 )
 
 // HAEntityInfo is the JSON shape returned for entity listings.
@@ -48,8 +49,13 @@ func cmdHA(cfg *Config, sub string, arg string) (interface{}, error) {
 		return haAllKnownStates(client)
 	case "entities":
 		return haAllEntities(client)
+	case "history":
+		if arg == "" {
+			return nil, fmt.Errorf("ha history: kind or entity_id required (e.g. 'sleep_duration')")
+		}
+		return haHistory(client, arg, cfg.Days)
 	default:
-		return nil, fmt.Errorf("unknown ha subcommand: %q (ping|state|states|entities)", sub)
+		return nil, fmt.Errorf("unknown ha subcommand: %q (ping|state|states|entities|history)", sub)
 	}
 }
 
@@ -125,6 +131,52 @@ func haAllEntities(c *HAClient) (interface{}, error) {
 			info.Kind = string(e.Kind)
 		}
 		out = append(out, info)
+	}
+	return out, nil
+}
+
+// HAHistoryResult is the JSON shape returned for `ha history <kind>`.
+type HAHistoryResult struct {
+	EntityID string          `json:"entity_id"`
+	Kind     string          `json:"kind,omitempty"`
+	Unit     string          `json:"unit,omitempty"`
+	Days     int             `json:"days"`
+	From     string          `json:"from"`
+	To       string          `json:"to"`
+	Count    int             `json:"count"`
+	Points   []HAStateResult `json:"points"`
+}
+
+// haHistory wraps HAClient.GetHistory and shapes the output with the same
+// lifetract annotations as `ha state`.
+func haHistory(c *HAClient, ref string, days int) (interface{}, error) {
+	if days <= 0 {
+		days = 7
+	}
+	entityID, _ := ResolveEntityRef(ref)
+	if entityID == "" {
+		entityID = ref
+	}
+	end := time.Now()
+	start := end.AddDate(0, 0, -days)
+	states, err := c.GetHistory(entityID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	out := HAHistoryResult{
+		EntityID: entityID,
+		Days:     days,
+		From:     start.Format("2006-01-02T15:04:05Z07:00"),
+		To:       end.Format("2006-01-02T15:04:05Z07:00"),
+		Count:    len(states),
+		Points:   make([]HAStateResult, 0, len(states)),
+	}
+	if e, ok := EntityByID(entityID); ok {
+		out.Kind = string(e.Kind)
+		out.Unit = e.Unit
+	}
+	for i := range states {
+		out.Points = append(out.Points, toStateResult(&states[i]))
 	}
 	return out, nil
 }

@@ -29,7 +29,7 @@ Commands:
   time    [--days N]     Time category analysis (aTimeLogger)
   import                 Show import manifest (CSV+SQLite → lifetract.db)
   export                 Show export plan (public-safe DB)
-  ha <sub> [arg]         Home Assistant REST (ping|state|states|entities)
+  ha <sub> [arg]         Home Assistant REST (ping|state|states|entities|history)
 
 Flags:
   --days N               Days to look back (default: 7)

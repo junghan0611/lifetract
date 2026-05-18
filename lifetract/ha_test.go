@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockHA returns a test HA server + client bound to it. Pass per-path handlers.
@@ -212,6 +213,99 @@ func TestCmdHAStateAnnotatesKind(t *testing.T) {
 	}
 	if r.Value == nil || *r.Value != 72.0 {
 		t.Errorf("Value = %v, want 72.0", r.Value)
+	}
+}
+
+// --- history ---
+
+func TestHAGetHistory(t *testing.T) {
+	// HA returns [[HAState, HAState, ...]] — outer = per entity, inner = chronological state changes
+	body := `[[
+		{"entity_id":"sensor.s","state":"427.0","attributes":{"unit_of_measurement":"min"},"last_changed":"2026-05-17T11:56:58Z","last_updated":"2026-05-17T11:56:58Z"},
+		{"entity_id":"sensor.s","state":"415.0","attributes":{"unit_of_measurement":"min"},"last_changed":"2026-05-17T19:53:44Z","last_updated":"2026-05-17T19:53:44Z"}
+	]]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		// Path must start with /api/history/period/
+		if !strings.HasPrefix(r.URL.Path, "/api/history/period/") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		// Query must include filter_entity_id and end_time
+		if r.URL.Query().Get("filter_entity_id") == "" || r.URL.Query().Get("end_time") == "" {
+			http.Error(w, "missing query", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+	c := &HAClient{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}
+	end := time.Now()
+	start := end.AddDate(0, 0, -7)
+	states, err := c.GetHistory("sensor.s", start, end)
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("got %d states, want 2", len(states))
+	}
+	if v, ok := states[0].FloatValue(); !ok || v != 427.0 {
+		t.Errorf("first state value = (%v, %v), want 427", v, ok)
+	}
+}
+
+func TestHAGetHistoryEmpty(t *testing.T) {
+	// Sensor exists but has no history yet
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+	c := &HAClient{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}
+	end := time.Now()
+	states, err := c.GetHistory("sensor.s", end.AddDate(0, 0, -1), end)
+	if err != nil {
+		t.Fatalf("GetHistory empty: %v", err)
+	}
+	if len(states) != 0 {
+		t.Errorf("expected 0 states for empty series, got %d", len(states))
+	}
+}
+
+func TestCmdHAHistoryShapesPoints(t *testing.T) {
+	body := `[[
+		{"entity_id":"sensor.sm_s942n_s26_glgman_sleep_duration","state":"427.0","attributes":{"unit_of_measurement":"min"},"last_changed":"2026-05-17T11:56:58Z","last_updated":"2026-05-17T11:56:58Z"},
+		{"entity_id":"sensor.sm_s942n_s26_glgman_sleep_duration","state":"415.0","attributes":{"unit_of_measurement":"min"},"last_changed":"2026-05-17T19:53:44Z","last_updated":"2026-05-17T19:53:44Z"}
+	]]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+	c := &HAClient{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}
+	out, err := haHistory(c, "sleep_duration", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := out.(HAHistoryResult)
+	if !ok {
+		t.Fatalf("expected HAHistoryResult, got %T", out)
+	}
+	if r.Count != 2 || len(r.Points) != 2 {
+		t.Errorf("Count=%d, len(Points)=%d, want 2/2", r.Count, len(r.Points))
+	}
+	if r.Kind != string(KindSleepDuration) {
+		t.Errorf("Kind = %q, want %q", r.Kind, KindSleepDuration)
+	}
+	if r.Days != 7 {
+		t.Errorf("Days = %d, want 7", r.Days)
+	}
+	if r.Points[0].Value == nil || *r.Points[0].Value != 427.0 {
+		t.Errorf("first point value = %v, want 427", r.Points[0].Value)
 	}
 }
 

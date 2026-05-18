@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,6 +183,32 @@ func (c *HAClient) GetAllStates() ([]HAState, error) {
 		return nil, fmt.Errorf("decode states: %w", err)
 	}
 	return out, nil
+}
+
+// GetHistory fetches the recorded state changes for one entity between start
+// and end. HA returns [][]HAState (outer = per entity, inner = chronological
+// state changes); we flatten to a single slice for the common single-entity
+// case. HA's recorder keeps changes only — values stay the same emit no rows —
+// and only data accumulated since the recorder started exists. There is no
+// backfill for periods before HA was deployed.
+func (c *HAClient) GetHistory(entityID string, start, end time.Time) ([]HAState, error) {
+	q := url.Values{}
+	q.Set("filter_entity_id", entityID)
+	q.Set("end_time", end.UTC().Format("2006-01-02T15:04:05+00:00"))
+	startStr := start.UTC().Format("2006-01-02T15:04:05+00:00")
+	path := "/api/history/period/" + startStr + "?" + q.Encode()
+	body, err := c.get(path)
+	if err != nil {
+		return nil, err
+	}
+	var series [][]HAState
+	if err := json.Unmarshal(body, &series); err != nil {
+		return nil, fmt.Errorf("decode history %s: %w", entityID, err)
+	}
+	if len(series) == 0 {
+		return []HAState{}, nil
+	}
+	return series[0], nil
 }
 
 // get issues an authenticated GET and returns the response body.
