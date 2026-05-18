@@ -88,7 +88,7 @@ case "${1:-}" in
 lifetract — Life tracking CLI for AI agents
 
 Usage:
-  ./run.sh build [DIR]   Build lifetract, install to DIR (default: ~/.local/bin)
+  ./run.sh build [DIR]   Build lifetract, install to DIR (default: ./lifetract/)
   ./run.sh test          Run all tests
   ./run.sh bench         Run benchmarks
   ./run.sh update        날짜 폴더(YYYYMMDD)에서 데이터 배치 + DB 재빌드
