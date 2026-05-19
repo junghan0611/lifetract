@@ -67,18 +67,18 @@ lifetract <command>               │
 
 | Table | Source | Rows |
 |-------|--------|------|
-| `sleep` | Samsung Health | 4,489 |
-| `sleep_stage` | Samsung Health | 78,591 |
-| `heart_rate` | Samsung Health | 62,036 |
-| `steps_daily` | Samsung Health | 9,692 |
-| `stress` | Samsung Health | 25,768 |
-| `exercise` | Samsung Health | 2,195 |
-| `weight` | Samsung Health | 283 |
+| `sleep` | Samsung Health | 4,638 |
+| `sleep_stage` | Samsung Health | 82,357 |
+| `heart_rate` | Samsung Health | 63,575 |
+| `steps_daily` | Samsung Health | 3,330 |
+| `stress` | Samsung Health | 26,775 |
+| `exercise` | Samsung Health | 2,199 |
+| `weight` | Samsung Health | 284 |
 | `hrv` | Samsung Health | 1,058 |
 | `atl_category` | aTimeLogger | 18 |
-| `atl_interval` | aTimeLogger | 13,918 |
+| `atl_interval` | aTimeLogger | 14,331 |
 
-**Total: 198,030 rows, 36MB** (as of 2026-03-10)
+**Total: 198,547 rows, 36MB** (as of 2026-05-19, Samsung CSV → 2026-05-18)
 
 ---
 
@@ -185,6 +185,7 @@ lifetract/
 |------|------------|---------|----------------|-------------|-------|
 | 2025-10-06 | 183,635 | 33MB | ~2025-10 (77 CSVs) | ~2025-10 (13,102 intervals) | Initial build |
 | 2026-03-10 | 198,030 | 36MB | ~2026-03 (78 CSVs) | ~2026-03 (13,918 intervals) | +14,395 rows, 5 months added |
+| 2026-05-19 | 198,547 | 36MB | ~2026-05-18 (79 CSVs) | ~2026-05-18 (14,331 intervals) | +517 rows; HA 라이브 (5/17~) 합류 — DB 가 SSOT, HA 가 인터페이스 |
 
 ---
 

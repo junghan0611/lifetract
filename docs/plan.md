@@ -42,8 +42,20 @@ denotecli(정성: 노트/저널) + lifetract(정량: 건강/시간) → 같은 D
 - [ ] 주간/월간 리포트 생성
 - [ ] Traction 비율 추이 (Indistractable 지표)
 
-## Phase 6 — Health Connect 실시간
+## Phase 6 — 라이브 입력 스트림 ✅ (2026-05-17 ~ 2026-05-19)
 
-- [ ] Google Drive에서 Health Connect backup zip 다운로드
-- [ ] SQLite 파싱 (samsung-health-skill 참고)
-- [ ] 최신 데이터 우선, CSV는 아카이브 폴백
+> **방향 정정 (2026-05-18)**: 옛 안 "Google Drive 에서 Health Connect backup zip 다운로드" 는 폐기. HA recorder 는 적립 인프라이므로 9년 timeline backfill 불가 — 본 데이터 SSOT 는 Samsung CSV 주기 덤프, HA 는 라이브 인터페이스. 두 source 가 5/17 자리에서 겹쳐 시간축 단절 없음. 자세한 의미축은 [[denote:20260517T211731]] (botlog).
+
+- [x] **Home Assistant REST 인터페이스** — `ha.go` (HAClient, GetState/GetAllStates/GetHistory/Ping), `KnownEntities` 24 sensor declarative 등록, CLI `ha ping|state|states|entities|history`, mock test + 라이브 검증 통과
+- [x] **Samsung CSV 정기 덤프 사이클** — `./run.sh update` (`~/repos/gh/self-tracking-data/<YYYYMMDD>/` → 폴더 이동 + db3 교체 + `import --exec`). 2026-05-19 첫 정기 갱신 (198,547 rows, Samsung CSV → 2026-05-18)
+- [ ] **새 sleep 파일군** (`sleep_data`, `sleep_combined`, `sleep_raw_data`, `sleep_snoring`) schema 확장 — Galaxy S26 변경 영향
+- [ ] **새 sensor** (`respiratory_rate`, `oxygen_saturation`) schema 확장
+- [ ] **aTimeLogger 자동 갱신** (현재는 수동 db3 교체)
+
+## Phase 7 — HA → DB lazy ingest (시급성 낮음)
+
+> *언젠가* 의미 있음. 본 시급은 아님 — Samsung 주기 덤프가 SSOT 를 갱신하므로 갭이 자연스럽게 닫힘.
+
+- [ ] DB 스키마: 기존 테이블 + `source TEXT` 컬럼 (`samsung_csv` / `ha_rest`), `(date, source)` upsert
+- [ ] `lifetract today` / `read` 의 "오늘 자리" 만 HA hit (5/19 today 의 `avg_hr=0`, `stress_avg=0` 자리 해결)
+- [ ] sleep stage 빈 자리는 다음 Samsung 덤프가 채움 (HA 가 stages 안 줌)
