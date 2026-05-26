@@ -4,52 +4,45 @@
 
 ---
 
-## 1. SSOT 첫 정기 갱신 (2026-05-19)
+## 닫힌 자리 (최근 turn)
 
-Phase 6 (HA 라이브 + Samsung CSV SSOT) 가 정착된 첫 turn. lifetract.db = 198,547 rows, Samsung CSV → 2026-05-18. HA 라이브 (5/17~) 와 5/17 자리에서 겹쳐 시간축 단절 없음.
+- [x] **Phase 7 read-only fallback** (2026-05-26) — `today` / `read <오늘>` 이 DB miss/stale 자리를 HA `GetState` (steps/heart_rate) + `GetHistory` (sleep_duration 최근 36h 합산) 로 자동 채움. `source: "db+ha"`, `ha_sources` 자리 노출. 에이전트가 lifetract 부를 때 *life 정보를 무시하고 넘어가는 자리* 닫힘.
+- [x] **today.sleep_hours 가 옛 row 잡는 자리** (2026-05-26) — `todaySleepStale` heuristic 으로 DB 최근 sleep date ≠ today/yesterday 면 stale 판정 + HA 로 덮어씀.
+- [x] **AGENTS.md "세 입력 스트림"** (2026-05-26) — §2 / §5 갱신. HA REST 라이브 인터페이스 명시 + Operational workflow 한 줄.
 
-검증된 자리:
-- [x] `lifetract sleep --days 30 --summary` — 29일, 68 sessions, avg 3.1h (낮잠 포함)
-- [x] `lifetract read 2026-04-15` (갭 한복판) — health + time + sleep_sessions 모두 답
-- [x] `lifetract read 2026-05-17` — DB 가 답 (Samsung 마지막 sleep 5/17 12:53)
-- [x] `lifetract ha history sleep_duration --days 7` — 두 entries (5/17, 5/18 새벽)
+## 다음 한 걸음 후보 (시급순)
 
-남은 자리:
-- [x] **today 의 health 일부 빔** — 2026-05-26: Phase 7 read-only fallback 으로 자동 해결. DB miss 시 HA `GetState` (steps/heart_rate) 가 채움. `source: "db+ha"`, `ha_sources` 로 자리 노출.
-- [x] **today.sleep_hours 가 옛 row 잡는 자리** — 2026-05-26: `todaySleepStale` 이 DB 의 가장 최근 sleep date 가 today/yesterday 가 아니면 stale 로 보고, HA history (최근 36h sleep_duration 합산, main + nap) 로 덮어씀.
-- [ ] **DB epoch-0 잡음** — `heart_rate.min(start_time) = 1970-01-01` row 1건. import 시 invalid timestamp filter 자리.
-- [ ] **HA → DB lazy upsert (Phase 7 후반부)** — read-only fallback 이 매번 HA 를 때리는 자리 → `source TEXT` 컬럼 + `(date, source)` upsert 로 적립. offline 모드 보장.
+### A. 새 sleep 파일군 schema 확장 (중)
 
-## 2. 새 데이터 schema 확장 (Galaxy S26 영향)
+Galaxy S26 export 에 `sleep_data`, `sleep_combined`, `sleep_raw_data`, `sleep_snoring` 신규 — 현재 silent skip. sleep stages 자리 (HA 가 못 주는 자리) 가 본 쪽에서 풍부해질 가능성. `import_exec.go` + `db.go` schema 두 자리.
 
-이번 export 에 *기존 import 가 모르는 새 파일* 들이 들어옴 — silent skip 중. 의미 있는 자리만 schema 확장:
+### B. aTimeLogger 자동 동기화 (중)
 
-- [ ] **sleep 새 파일군** — `sleep_data`, `sleep_combined`, `sleep_raw_data`, `sleep_snoring`. 본 SSOT 의 sleep stages 자리 (HA 가 못 주는 자리) 가 본 쪽에서 더 풍부해질 가능성
-- [ ] **호흡수** `com.samsung.health.respiratory_rate` — HA 측에도 `respiratory_rate` sensor 있어 두 source 가 연결되는 자리
-- [ ] **혈중산소** `com.samsung.shealth.tracker.oxygen_saturation`
-
-## 3. AGENTS.md / README 영속화 (남은 자리)
-
-- [ ] AGENTS.md §2 "두 입력 스트림" → "세 입력 스트림" (HA REST 라이브 인터페이스 추가)
-- [ ] AGENTS.md §5 Operational workflow 에 HA 호출 절차 한 줄
-- [ ] README architecture 다이어그램에 HA 입력 화살표
-
-## 4. aTimeLogger 자동 갱신 (TODO)
-
-현재는 폰 → backup → 수동 cp. 자동 동기화 자리:
+현재는 폰 → backup → 수동 cp. AGENTS.md gotcha 의 "사람이 손대지 않아도 흐르는 자리만 살아남는다" 자리. 옵션:
 - 폰의 aTimeLogger pro 가 cloud sync 지원하는지 확인
-- 아니면 폰 → 호스트 자동 push (Syncthing/rsync) 후 `./run.sh update` cron
+- 폰 → 호스트 자동 push (Syncthing/rsync) 후 `./run.sh update` cron
 
-## 5. Phase 7 — HA → DB lazy ingest (진행 중)
+### C. 새 sensor schema 확장 (낮음)
 
-- 2026-05-26: **read-only fallback** 완료. `today` / `read <오늘>` 이 DB 빈 자리를 HA 라이브 값으로 자동 채움. 에이전트가 punchout / recall / day-query 어디서 lifetract 를 부르든 *life 정보를 무시하고 넘어가지 않는다*. (1번 자리에 이미 [x] 표시)
-- **후반부**: DB upsert (source 컬럼 + (date,source) upsert) — read-only fallback 이 매번 HA 를 때리는 자리를 적립으로 닫음. offline 보장. plan.md Phase 7 후반 자리.
+- `com.samsung.health.respiratory_rate` — HA 측에도 `respiratory_rate` sensor 있어 두 source 가 연결되는 자리
+- `com.samsung.shealth.tracker.oxygen_saturation`
 
-## 6. Cross-repo
+### D. Phase 7 후반부 — HA → DB lazy upsert (낮음)
 
-- [ ] [pi-skills/lifetract](https://github.com/junghan0611/pi-skills/tree/main/lifetract) — SKILL.md 본 갱신 반영 (symlink, push 만)
-- [ ] [homeagent-config](https://github.com/junghan0611/homeagent-config) — HA dogfooding
+read-only fallback 이 사용자 가시 자리는 다 채움. *언젠가* 의 자리:
+- 기존 테이블 + `source TEXT` 컬럼 (`samsung_csv` / `ha_rest`)
+- `(date, source)` upsert
+- offline 모드 보장 (HA 못 닿아도 같은 답)
+
+### E. 잡 정리 (낮음)
+
+- DB epoch-0 잡음 — `heart_rate.min(start_time) = 1970-01-01` row 1건. import 시 invalid timestamp filter 자리.
+- README architecture 다이어그램에 HA 입력 화살표
+- pi-skills/lifetract — SKILL.md 본 갱신 반영 (symlink, push 만)
+- [homeagent-config](https://github.com/junghan0611/homeagent-config) — HA dogfooding
 
 ---
 
-본 도구의 책임은 *데이터가 어떻게 흘러나가는가* 다. 2026-05-19 — SSOT 첫 정기 갱신이 정착됐다. "한달치 수면 물어봐도 답할 수 있다." 다음 자리는 *새 sensor schema 확장* 또는 *오늘 자리 채우는 phase 7*.
+다음에 부르면: **A (새 sleep 파일군)** 가 의미축이 가장 살아 있는 자리. sleep stages 는 HA 가 못 주는 자리고, 본 SSOT 에서 풍부해진다.
+
+본 도구의 책임은 *데이터가 어떻게 흘러나가는가* 다. 2026-05-26 — phase 7 read-only fallback 정착. "에이전트가 부르면 항상 답한다." 다음 자리는 *입력 source 의 풍부함* (A) 또는 *흐름의 자동화* (B).
