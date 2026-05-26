@@ -15,9 +15,10 @@ Phase 6 (HA 라이브 + Samsung CSV SSOT) 가 정착된 첫 turn. lifetract.db =
 - [x] `lifetract ha history sleep_duration --days 7` — 두 entries (5/17, 5/18 새벽)
 
 남은 자리:
-- [ ] **today 의 health 일부 빔** — 5/19 today 의 `avg_hr=0`, `stress_avg=0`. 오늘 자리는 다음 Samsung 덤프 전까지 빔. Phase 7 (HA→DB lazy) 가 본 자리 해결.
-- [ ] **today.sleep_hours 가 옛 row 잡는 자리** — 5/19 today 의 `sleep_hours=6.9` 가 사실은 *5/17 새벽 수면* row. 신규 sleep row 가 DB 에 들어오기 전엔 "가장 최근 sleep" 으로 옛 row 가 잡힘. `cmdToday` 의 sleep query 자리.
+- [x] **today 의 health 일부 빔** — 2026-05-26: Phase 7 read-only fallback 으로 자동 해결. DB miss 시 HA `GetState` (steps/heart_rate) 가 채움. `source: "db+ha"`, `ha_sources` 로 자리 노출.
+- [x] **today.sleep_hours 가 옛 row 잡는 자리** — 2026-05-26: `todaySleepStale` 이 DB 의 가장 최근 sleep date 가 today/yesterday 가 아니면 stale 로 보고, HA history (최근 36h sleep_duration 합산, main + nap) 로 덮어씀.
 - [ ] **DB epoch-0 잡음** — `heart_rate.min(start_time) = 1970-01-01` row 1건. import 시 invalid timestamp filter 자리.
+- [ ] **HA → DB lazy upsert (Phase 7 후반부)** — read-only fallback 이 매번 HA 를 때리는 자리 → `source TEXT` 컬럼 + `(date, source)` upsert 로 적립. offline 모드 보장.
 
 ## 2. 새 데이터 schema 확장 (Galaxy S26 영향)
 
@@ -39,9 +40,10 @@ Phase 6 (HA 라이브 + Samsung CSV SSOT) 가 정착된 첫 turn. lifetract.db =
 - 폰의 aTimeLogger pro 가 cloud sync 지원하는지 확인
 - 아니면 폰 → 호스트 자동 push (Syncthing/rsync) 후 `./run.sh update` cron
 
-## 5. Phase 7 — HA → DB lazy ingest (시급성 낮음)
+## 5. Phase 7 — HA → DB lazy ingest (진행 중)
 
-본 turn 으로 시급성 더 약해짐 — Samsung CSV 주기 덤프가 SSOT 갱신, HA 가 라이브 자리. today/read 의 "오늘 자리" 만 빈 곳. plan.md Phase 7 자리.
+- 2026-05-26: **read-only fallback** 완료. `today` / `read <오늘>` 이 DB 빈 자리를 HA 라이브 값으로 자동 채움. 에이전트가 punchout / recall / day-query 어디서 lifetract 를 부르든 *life 정보를 무시하고 넘어가지 않는다*. (1번 자리에 이미 [x] 표시)
+- **후반부**: DB upsert (source 컬럼 + (date,source) upsert) — read-only fallback 이 매번 HA 를 때리는 자리를 적립으로 닫음. offline 보장. plan.md Phase 7 후반 자리.
 
 ## 6. Cross-repo
 

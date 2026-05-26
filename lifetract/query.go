@@ -88,7 +88,8 @@ type TodayResult struct {
 	AvgHR          float64        `json:"avg_hr"`
 	StressAvg      float64        `json:"stress_avg"`
 	TimeCategories []TimeCategory `json:"time_categories,omitempty"`
-	Source         string         `json:"source"` // "db" or "csv"
+	Source         string         `json:"source"`               // "db" | "csv" | "db+ha" | "csv+ha"
+	HASources      []string       `json:"ha_sources,omitempty"` // fields HA filled in
 }
 
 func cmdToday(cfg *Config) (interface{}, error) {
@@ -128,6 +129,8 @@ func cmdToday(cfg *Config) (interface{}, error) {
 			result.StressAvg = stresses[0].AvgScore
 		}
 	}
+
+	enrichTodayWithHA(cfg, result)
 
 	return result, nil
 }

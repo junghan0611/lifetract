@@ -52,10 +52,10 @@ denotecli(정성: 노트/저널) + lifetract(정량: 건강/시간) → 같은 D
 - [ ] **새 sensor** (`respiratory_rate`, `oxygen_saturation`) schema 확장
 - [ ] **aTimeLogger 자동 갱신** (현재는 수동 db3 교체)
 
-## Phase 7 — HA → DB lazy ingest (시급성 낮음)
+## Phase 7 — HA → DB lazy ingest (진행 중, 2026-05-26 ~)
 
-> *언젠가* 의미 있음. 본 시급은 아님 — Samsung 주기 덤프가 SSOT 를 갱신하므로 갭이 자연스럽게 닫힘.
+> 사용자 가시 자리(에이전트가 *life 정보를 무시하고 넘어가지 않게* 하는 자리)는 본 phase 의 read-only fallback 으로 닫힌다. DB upsert 는 후속.
 
-- [ ] DB 스키마: 기존 테이블 + `source TEXT` 컬럼 (`samsung_csv` / `ha_rest`), `(date, source)` upsert
-- [ ] `lifetract today` / `read` 의 "오늘 자리" 만 HA hit (5/19 today 의 `avg_hr=0`, `stress_avg=0` 자리 해결)
+- [x] **read-only fallback** (2026-05-26) — `cmdToday` / `cmdRead <오늘>` 이 DB miss 또는 stale sleep 자리에서 자동으로 HA `GetState` (steps/heart_rate) + `GetHistory` (sleep_duration, 최근 36h 합산) 를 호출해 JSON 응답에 채움. `source: "db+ha"`, `ha_sources: [...]` 로 자리 노출. 과거 날짜는 enrichment 안 됨 (HA recorder 가 backfill 안 함). `LIFETRACT_NO_HA=1` 로 끔. 새 파일 `ha_fallback.go` + `enrichTodayFromHAClient` / `enrichTimelineEntryFromHAClient` (mock client 주입 테스트 가능)
+- [ ] **DB upsert (후반부)** — 기존 테이블 + `source TEXT` 컬럼 (`samsung_csv` / `ha_rest`), `(date, source)` upsert. read-only fallback 이 매번 HA 를 때리는 자리를 *한 번 가져온 뒤 DB 에 적립* 으로 줄임. offline 모드에서도 같은 답 보장.
 - [ ] sleep stage 빈 자리는 다음 Samsung 덤프가 채움 (HA 가 stages 안 줌)

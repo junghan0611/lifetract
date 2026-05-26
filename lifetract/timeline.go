@@ -6,11 +6,12 @@ import (
 
 // TimelineEntry represents a single day's unified life data.
 type TimelineEntry struct {
-	ID       string          `json:"id"`
-	Date     string          `json:"date"`
-	Health   *HealthMetrics  `json:"health,omitempty"`
-	Time     *TimeMetrics    `json:"time,omitempty"`
-	Exercise []ExerciseBrief `json:"exercise,omitempty"`
+	ID        string          `json:"id"`
+	Date      string          `json:"date"`
+	Health    *HealthMetrics  `json:"health,omitempty"`
+	Time      *TimeMetrics    `json:"time,omitempty"`
+	Exercise  []ExerciseBrief `json:"exercise,omitempty"`
+	HASources []string        `json:"ha_sources,omitempty"` // today-only, fields filled from HA
 }
 
 type HealthMetrics struct {

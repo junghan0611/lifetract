@@ -107,6 +107,10 @@ func csvReadDay(cfg *Config, day time.Time) (interface{}, error) {
 		}
 	}
 
+	if isToday(dateS) {
+		enrichTimelineEntryWithHA(cfg, entry)
+	}
+
 	type DayDetail struct {
 		*TimelineEntry
 		SleepSessions []SleepRecord `json:"sleep_sessions,omitempty"`
