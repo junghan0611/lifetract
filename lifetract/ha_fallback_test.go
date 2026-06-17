@@ -169,6 +169,67 @@ func TestEnrichTodayHistoryIgnoresOldEntries(t *testing.T) {
 	}
 }
 
+// TestEnrichTodaySleepByEndTimeDay — the real-world inflation bug: HA history
+// holds whole sessions from several nights (synced late, so LastChanged lands
+// them all inside the 36h window). Only sessions whose endTime is *today* may
+// be summed; prior nights must be excluded. Two of today's segments (a split
+// overnight) sum; yesterday's and a two-days-ago session drop.
+func TestEnrichTodaySleepByEndTimeDay(t *testing.T) {
+	now := time.Now()
+	// endTime attributes: two today (split overnight), one yesterday, one older.
+	todayEndA := now.Add(-9 * time.Hour).Format(time.RFC3339)
+	todayEndB := now.Add(-7 * time.Hour).Format(time.RFC3339)
+	yestEnd := now.AddDate(0, 0, -1).Format(time.RFC3339)
+	oldEnd := now.AddDate(0, 0, -2).Format(time.RFC3339)
+	// All synced recently (LastChanged within 36h) — the old buggy path summed all.
+	lc := now.Add(-1 * time.Hour).UTC().Format("2006-01-02T15:04:05Z07:00")
+	mk := func(state, end string) string {
+		return fmt.Sprintf(`{"entity_id":"sensor.sm_s942n_s26_glgman_sleep_duration","state":%q,"attributes":{"unit_of_measurement":"min","endTime":%q},"last_changed":%q,"last_updated":%q}`, state, end, lc, lc)
+	}
+	c := mockHAFallback(t,
+		map[string]string{},
+		map[string]string{
+			"sensor.sm_s942n_s26_glgman_sleep_duration": "[[" +
+				mk("385", oldEnd) + "," + mk("395", yestEnd) + "," +
+				mk("228", todayEndA) + "," + mk("127", todayEndB) + "]]",
+		},
+	)
+
+	cfg := &Config{DataDir: "testdata"}
+	result := &TodayResult{Date: now.Format("2006-01-02"), Source: "db", SleepHours: 0}
+	enrichTodayFromHAClient(cfg, result, c)
+
+	// 228 + 127 = 355 min = 5.9h. NOT 385+395+228+127 = 18.9h.
+	if result.SleepHours < 5.8 || result.SleepHours > 6.0 {
+		t.Errorf("SleepHours = %v, want ~5.9 (today's two segments only)", result.SleepHours)
+	}
+}
+
+// TestEnrichTodaySleepDedupsResync — the same session re-emitted (identical
+// endTime) must count once, not twice, even if the value was updated.
+func TestEnrichTodaySleepDedupsResync(t *testing.T) {
+	now := time.Now()
+	end := now.Add(-6 * time.Hour).Format(time.RFC3339)
+	lc := now.Add(-1 * time.Hour).UTC().Format("2006-01-02T15:04:05Z07:00")
+	mk := func(state string) string {
+		return fmt.Sprintf(`{"entity_id":"sensor.sm_s942n_s26_glgman_sleep_duration","state":%q,"attributes":{"unit_of_measurement":"min","endTime":%q},"last_changed":%q,"last_updated":%q}`, state, end, lc, lc)
+	}
+	c := mockHAFallback(t,
+		map[string]string{},
+		map[string]string{
+			"sensor.sm_s942n_s26_glgman_sleep_duration": "[[" + mk("400") + "," + mk("420") + "]]",
+		},
+	)
+	cfg := &Config{DataDir: "testdata"}
+	result := &TodayResult{Date: now.Format("2006-01-02"), Source: "db", SleepHours: 0}
+	enrichTodayFromHAClient(cfg, result, c)
+
+	// Same endTime → keep max 420min = 7.0h, not 400+420 = 13.7h.
+	if result.SleepHours < 6.9 || result.SleepHours > 7.1 {
+		t.Errorf("SleepHours = %v, want ~7.0 (dedup by endTime)", result.SleepHours)
+	}
+}
+
 // TestEnrichTodayUnreachableHASilent — when HA returns errors, fallback
 // must NOT mutate the result.
 func TestEnrichTodayUnreachableHASilent(t *testing.T) {

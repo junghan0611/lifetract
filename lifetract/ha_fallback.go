@@ -51,37 +51,79 @@ func haFloatStateForKind(c *HAClient, kind EntityKind) (float64, bool) {
 	return s.FloatValue()
 }
 
-// haRecentSleepMinutes sums sleep_duration history entries from the last 36h.
-// HA Companion App emits one state change per recorded sleep session, so the
-// sum covers main sleep + naps for the current day cluster. Returns
-// (0,false) when no entries fall in window.
+// sleepEndLocalDay returns the local calendar day (YYYY-MM-DD) a sleep_duration
+// state belongs to, taken from its endTime attribute (the session's wake time).
+// ok=false when the attribute is absent or unparseable — older firmware and the
+// unit tests emit states without it, and the caller falls back to LastChanged.
+func sleepEndLocalDay(s HAState) (string, bool) {
+	raw, has := s.Attributes["endTime"].(string)
+	if !has || raw == "" {
+		return "", false
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return "", false
+	}
+	return t.Local().Format("2006-01-02"), true
+}
+
+// haRecentSleepMinutes returns today's HA sleep minutes (main sleep + naps).
+// HA Companion App emits one state change per recorded sleep *session*, each
+// carrying the session's total duration and an endTime attribute marking when
+// it ended. We bucket sessions by the local calendar day of that endTime and
+// sum only today's — deduping re-syncs of the same session by endTime.
+//
+// We must NOT key off LastChanged (HA record time): the phone syncs sleeps
+// hours-to-days late, so a prior night's session lands inside today's 36h
+// LastChanged window. Summing those conflated 2-3 nights + naps into a single
+// 12-20h figure (the inflation bug). endTime attribution fixes that; states
+// lacking the attribute fall back to the old 36h window so legacy data and
+// tests still resolve. Returns (0,false) when nothing falls in window.
 func haRecentSleepMinutes(c *HAClient) (float64, bool) {
 	es, ok := EntitiesByKind[KindSleepDuration]
 	if !ok || len(es) == 0 {
 		return 0, false
 	}
-	end := time.Now()
-	start := end.AddDate(0, 0, -2)
-	states, err := c.GetHistory(es[0].EntityID, start, end)
+	now := time.Now()
+	states, err := c.GetHistory(es[0].EntityID, now.AddDate(0, 0, -2), now)
 	if err != nil {
 		return 0, false
 	}
-	cutoff := end.Add(-36 * time.Hour)
-	total := 0.0
+	today := now.Format("2006-01-02")
+	cutoff := now.Add(-36 * time.Hour)
+
+	byEnd := map[string]float64{} // endTime -> max duration (dedup re-syncs)
+	var fallback float64
 	seen := false
 	for _, s := range states {
-		if s.LastChanged.Before(cutoff) {
-			continue
-		}
 		v, ok := s.FloatValue()
 		if !ok || v <= 0 {
 			continue
 		}
-		total += v
+		if day, ok := sleepEndLocalDay(s); ok {
+			if day != today {
+				continue // a different night's sleep synced into the window
+			}
+			key := s.Attributes["endTime"].(string)
+			if v > byEnd[key] {
+				byEnd[key] = v
+			}
+			seen = true
+			continue
+		}
+		// No endTime attribute: fall back to the 36h LastChanged window.
+		if s.LastChanged.Before(cutoff) {
+			continue
+		}
+		fallback += v
 		seen = true
 	}
 	if !seen {
 		return 0, false
+	}
+	total := fallback
+	for _, v := range byEnd {
+		total += v
 	}
 	return total, true
 }
