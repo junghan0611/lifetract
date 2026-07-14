@@ -30,7 +30,11 @@ func openDB(path string) (*sql.DB, error) {
 }
 
 // initSchema creates all tables if they don't exist.
-func initSchema(db *sql.DB) error {
+// initSchema is a variable so a test can wedge a failure into the ledger. The
+// promise it guards — a run whose record failed to write is never promoted — is
+// the one promise that cannot be verified by watching a healthy import, and an
+// unverified failure path is just a comment.
+var initSchema = func(db *sql.DB) error {
 	schema := `
 	-- Samsung Health: sleep sessions
 	CREATE TABLE IF NOT EXISTS sleep (
@@ -175,10 +179,15 @@ func initSchema(db *sql.DB) error {
 // logImport records one stream of one import run. The run's id and timestamp are
 // fixed by the caller before the run starts — a stamp taken here, per row, is a
 // stamp that disagrees with itself when the clock ticks mid-import.
-func logImport(db *sql.DB, runID int, at, source, tableName string, rows int, sourcePath string) {
-	db.Exec(`INSERT INTO import_log (import_id, imported_at, source, table_name, rows_imported, source_path)
+//
+// The error is returned, not dropped. This table is the baseline every future
+// import is judged against; a write that fails here is a loss the next run cannot
+// see, and a silent one at that.
+func logImport(db *sql.DB, runID int, at, source, tableName string, rows int, sourcePath string) error {
+	_, err := db.Exec(`INSERT INTO import_log (import_id, imported_at, source, table_name, rows_imported, source_path)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		runID, at, source, tableName, rows, sourcePath)
+	return err
 }
 
 // dbExists checks if the lifetract.db exists.

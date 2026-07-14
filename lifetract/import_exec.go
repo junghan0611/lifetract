@@ -10,26 +10,34 @@ import (
 )
 
 // execImport performs the actual CSV+SQLite → lifetract.db conversion.
+//
+// The import builds a candidate and promotes it only if the run is sound. It used
+// to delete the live DB first and build in its place, which meant that by the time
+// the warning about a lost stream was printed, the DB that still had the stream was
+// already gone and every query afterwards read the broken one. Saying "I lost it"
+// is worth little while still handing over the loss: a warning the caller must act
+// on before the damage lands is a warning, and one that arrives after is an epitaph.
 func execImport(cfg *Config) (*ImportResult, error) {
 	path := dbPath(cfg)
+	candidate := path + ".candidate"
 
-	// What the streams were worth last time. Read BEFORE the DB is removed —
-	// the ledger lives inside the file we are about to delete (import_ledger.go).
+	// What the streams were worth last time — read from the live DB, which is
+	// still there and stays there (import_ledger.go).
 	base := readBaseline(path)
 
-	// Remove old DB if exists (fresh import)
-	os.Remove(path)
+	if err := removeDB(candidate); err != nil {
+		return nil, fmt.Errorf("clear candidate: %w", err)
+	}
 
-	db, err := openDB(path)
+	db, err := openDB(candidate)
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer db.Close() // no-op after the explicit Close below; here for the error paths
 
 	if err := initSchema(db); err != nil {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
-	carryForward(db, base)
 
 	// One stamp, one id, for the whole run. Taken here, once — a clock read per
 	// row is a clock that ticks mid-import and splits one run into two.
@@ -50,11 +58,16 @@ func execImport(cfg *Config) (*ImportResult, error) {
 		// The ledger was there and we could not read it. That is not a first
 		// import, and calling it one would silently disarm the loss check for
 		// this run — the exact silence the check exists to break.
-		result.Status = statusWarn
-		result.Warnings = append(result.Warnings,
-			"ledger unreadable — no loss check this run: "+base.ReadErr)
+		result.warn("ledger unreadable — no loss check this run: " + base.ReadErr)
 	default:
 		result.Note = "first import — no baseline to compare against"
+	}
+
+	// The history has to survive into the candidate, or the candidate is a DB that
+	// has forgotten every stream it ever held. A carry-forward that fails is not a
+	// detail to log and move past: promote that file and the ledger is gone.
+	if err := carryForward(db, base); err != nil {
+		result.warn("ledger carry-forward failed — not promoting: " + err.Error())
 	}
 
 	// Samsung Health CSVs
@@ -86,8 +99,33 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	// VACUUM for compact size
 	db.Exec("VACUUM")
 
-	info, _ := os.Stat(path)
-	if info != nil {
+	// Fold the WAL back into the file before anything renames it: the sidecars are
+	// not moved with it, and a DB promoted without its WAL is a DB missing whatever
+	// the WAL still held.
+	db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	if err := db.Close(); err != nil {
+		return nil, fmt.Errorf("close candidate: %w", err)
+	}
+
+	// Promote only a sound run. A warning means the live DB — which still has the
+	// stream this run lost — stays exactly where it is. Nothing to protect (no live
+	// DB yet) is the one case where a warning still promotes: some data beats none,
+	// and the warning is on the record either way.
+	live := dbExists(cfg)
+	switch {
+	case result.Status == statusOK || !live:
+		if err := promoteDB(candidate, path); err != nil {
+			return nil, fmt.Errorf("promote: %w", err)
+		}
+		result.DBPath = path
+	default:
+		result.DBPath = path // untouched, and still the good one
+		result.CandidatePath = candidate
+		result.warn("live DB left untouched — this run was not promoted. " +
+			"The candidate is kept for inspection: " + candidate)
+	}
+
+	if info, _ := os.Stat(result.promotedPath()); info != nil {
 		result.DBSizeMB = float64(info.Size()) / (1024 * 1024)
 	}
 	result.Duration = time.Since(result.StartAt).String()
@@ -95,13 +133,46 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	return result, nil
 }
 
+// promotedPath is the file the result's numbers describe: the live DB when the run
+// was promoted, the candidate when it was held back.
+func (r *ImportResult) promotedPath() string {
+	if r.CandidatePath != "" {
+		return r.CandidatePath
+	}
+	return r.DBPath
+}
+
+// promoteDB swaps the candidate into place. The old sidecars must go with the old
+// file — a -wal left behind belongs to a database that no longer exists, and SQLite
+// would read it as if it did.
+func promoteDB(candidate, path string) error {
+	if err := removeDB(path); err != nil {
+		return err
+	}
+	return os.Rename(candidate, path)
+}
+
+// removeDB deletes a SQLite database and its sidecars. A remove that fails is not
+// swallowed: it means the next step would build on a file we do not control.
+func removeDB(path string) error {
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // ImportResult leads with the verdict. A caller that reads one field reads
 // status, so status must be the field that knows about the loss — not total_rows,
 // which is happy to be smaller, and not the per-table "ok" that used to mean
 // nothing worse than "we opened a file".
 type ImportResult struct {
-	DBPath        string        `json:"db_path"`
-	Status        string        `json:"status"` // "ok" | "warning"
+	DBPath string `json:"db_path"`
+	Status string `json:"status"` // "ok" | "warning"
+	// CandidatePath is set only when the run was NOT promoted: db_path still holds
+	// the previous, sound database, and this is the file that was built and rejected.
+	CandidatePath string        `json:"candidate_path,omitempty"`
 	Warnings      []string      `json:"warnings,omitempty"`
 	Note          string        `json:"note,omitempty"`
 	BaselineAt    string        `json:"baseline_at,omitempty"`
@@ -115,6 +186,14 @@ type ImportResult struct {
 
 	runID int
 	runAt string
+}
+
+// warn records a problem and makes the verdict say so. Every path that notices
+// something wrong goes through here, so that no caller can find the trouble only
+// by reading the warnings and none by reading the status.
+func (r *ImportResult) warn(msg string) {
+	r.Warnings = append(r.Warnings, msg)
+	r.Status = statusWarn
 }
 
 // TableResult carries the previous count next to the new one. prev_rows/delta are
@@ -144,11 +223,15 @@ func (r *ImportResult) record(base *importBaseline, name, source string, rows in
 	r.TotalRows += rows
 
 	if warning != "" {
-		r.Warnings = append(r.Warnings, warning)
-		r.Status = statusWarn
+		r.warn(warning)
 	}
 
-	logImport(db, r.runID, r.runAt, source, name, rows, sourcePath)
+	// The ledger entry is not bookkeeping we can afford to lose. A row that fails
+	// to land is a stream this DB cannot vouch for next time — so the run says so,
+	// and is not promoted on the strength of a record it failed to write.
+	if err := logImport(db, r.runID, r.runAt, source, name, rows, sourcePath); err != nil {
+		r.warn(fmt.Sprintf("%s: ledger write failed — not promoting: %v", name, err))
+	}
 }
 
 // --- Samsung Health importers ---

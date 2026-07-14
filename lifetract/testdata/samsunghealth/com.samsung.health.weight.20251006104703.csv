@@ -1,0 +1,4 @@
+com.samsung.health.weight,1000,3
+datauuid,start_time,weight,body_fat,muscle_mass,time_offset
+w-uuid-1,2025-01-15 08:00:00.000,71.2,18.4,54.1,UTC+0900
+w-uuid-2,2025-01-16 08:00:00.000,71.0,18.3,54.2,UTC+0900

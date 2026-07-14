@@ -140,7 +140,12 @@ func readBaseline(path string) *importBaseline {
 		var n sql.NullInt64
 		var sp sql.NullString
 		if err := rows.Scan(&r.ImportID, &r.ImportedAt, &r.Source, &r.Table, &n, &sp); err != nil {
-			continue
+			// Skipping the row would leave a baseline missing whichever stream
+			// failed to scan — and a stream missing from the baseline is a stream
+			// whose disappearance nobody notices. Half a ledger is worse than none,
+			// because none announces itself.
+			b.ReadErr = err.Error()
+			return b
 		}
 		r.Rows = int(n.Int64)
 		r.SourcePath = sp.String
@@ -156,6 +161,14 @@ func readBaseline(path string) *importBaseline {
 			b.At = r.ImportedAt
 		}
 	}
+	// An iteration that ended in an error read fewer rows than the ledger holds,
+	// and says so nowhere unless asked. Ask.
+	if err := rows.Err(); err != nil {
+		b.ReadErr = err.Error()
+		b.History = nil
+		return b
+	}
+
 	b.Exists = len(b.History) > 0
 	b.numberRuns()
 	return b
@@ -174,27 +187,30 @@ func readBaseline(path string) *importBaseline {
 // count of a stream that died long ago — and that count is exactly what makes the
 // warning keep firing. A ledger that forgets is the silence we are here to end.
 // At ~9 rows an import, it can afford to remember.
-func carryForward(db *sql.DB, b *importBaseline) {
+func carryForward(db *sql.DB, b *importBaseline) error {
 	if len(b.History) == 0 {
-		return
+		return nil
 	}
 	tx, err := db.Begin()
 	if err != nil {
-		return
+		return err
 	}
 	stmt, err := tx.Prepare(`INSERT INTO import_log
 		(import_id, imported_at, source, table_name, rows_imported, source_path)
 		VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		tx.Rollback()
-		return
+		return err
 	}
 	defer stmt.Close()
 
 	for _, r := range b.History {
-		stmt.Exec(r.ImportID, r.ImportedAt, r.Source, r.Table, r.Rows, r.SourcePath)
+		if _, err := stmt.Exec(r.ImportID, r.ImportedAt, r.Source, r.Table, r.Rows, r.SourcePath); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("carry %s (run %d): %w", r.Table, r.ImportID, err)
+		}
 	}
-	tx.Commit()
+	return tx.Commit()
 }
 
 // prevTotal is what the last import added up to — the number a human would have
@@ -233,11 +249,20 @@ func (b *importBaseline) classify(name string, rows int, err error) (status, war
 		status = statusOK
 	}
 
-	// A stream that had rows and now has none. No baseline, no claim — the first
-	// import has nothing to compare against and says so instead of crying wolf.
+	// A stream that had rows and now has none. No baseline, no claim about loss —
+	// the first import has nothing to compare against and says so instead of
+	// crying wolf.
 	if rows == 0 && hadGood {
 		return status, fmt.Sprintf("%s: %s rows (%s) → 0 — stream lost [%s]",
 			name, comma(good), shortStamp(b.LastGoodAt[name]), status)
+	}
+
+	// Not being able to READ a source is a different fact from having nothing to
+	// compare it against, and it is true on the first import too. "No baseline" is
+	// a reason not to claim a loss; it was never a reason to call an unread source
+	// fine.
+	if err != nil {
+		return status, fmt.Sprintf("%s: source unreadable — %v", name, err)
 	}
 	if status == statusShrunk {
 		return status, fmt.Sprintf("%s: %s → %s rows (%s) — fewer than the last import",

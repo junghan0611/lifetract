@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,36 @@ func copyShealth(t *testing.T, dst string) {
 	}
 }
 
+// fakeATL writes a minimal aTimeLogger database. The fixtures used to point at a
+// path that did not exist, which quietly made "every source present" untestable:
+// an unreadable source is a warning now, on the first import as much as the tenth,
+// so a fixture that is missing a source can no longer stand in for a healthy run.
+func fakeATL(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+		CREATE TABLE activity_type (id INTEGER PRIMARY KEY, name TEXT, color INTEGER, is_group INTEGER, parent_id INTEGER);
+		CREATE TABLE time_interval2 (id INTEGER PRIMARY KEY, guid TEXT, start INTEGER, finish INTEGER,
+			comment TEXT, activity_type_id INTEGER, is_deleted INTEGER);
+		INSERT INTO activity_type VALUES (1, '본짓', 255, 0, 0), (2, '몸짓', 128, 0, 0);
+		INSERT INTO time_interval2 VALUES
+			(1, 'g1', 1767225600, 1767229200, '', 1, 0),
+			(2, 'g2', 1767232800, 1767236400, '', 2, 0),
+			(3, 'g3', 1767240000, 1767243600, '', 1, 0);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func lossCfg(t *testing.T) (*Config, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -43,7 +74,7 @@ func lossCfg(t *testing.T) (*Config, string) {
 		DataDir:       dir,
 		ShealthDir:    shealth,
 		ShealthDirs:   []string{shealth},
-		ATimeLoggerDB: "testdata/nonexistent.db3", // absent on purpose: never had rows, so never warns
+		ATimeLoggerDB: fakeATL(t, filepath.Join(dir, "atimelogger", "database.db3")),
 		Days:          9999,
 		Exec:          true,
 	}, shealth
@@ -166,9 +197,12 @@ func TestMissingCSVWarnsAgainstTheLedger(t *testing.T) {
 	}
 }
 
-// The stream stays lost until it comes back. A warning that fires once and then
-// goes quiet is the silence again, one import later: the ledger keeps the last
-// count the stream was actually worth, not merely the last count it reported.
+// The stream stays lost until it comes back — and the baseline it is measured
+// against does not rot in the meantime. Two things hold that line: a losing run is
+// never promoted, so the live ledger keeps the last sound counts; and the ledger
+// remembers the last NON-zero count regardless, so even a promoted zero cannot
+// become the new normal. A warning that fires once and then goes quiet is just the
+// silence again, one import later.
 func TestLossKeepsWarningOnTheNextImport(t *testing.T) {
 	cfg, shealth := lossCfg(t)
 
@@ -176,7 +210,7 @@ func TestLossKeepsWarningOnTheNextImport(t *testing.T) {
 	before := stream(t, first, "stress").Rows
 
 	truncateToHeader(t, filepath.Join(shealth, stressCSV))
-	execImport(cfg) // the import that loses it — warns
+	execImport(cfg) // the import that loses it — warns, and is held back
 
 	third, err := execImport(cfg) // still empty, still wrong
 	if err != nil {
@@ -186,8 +220,8 @@ func TestLossKeepsWarningOnTheNextImport(t *testing.T) {
 		t.Errorf("status = %q, want %q — the stream is still lost", third.Status, statusWarn)
 	}
 	st := stream(t, third, "stress")
-	if st.PrevRows == nil || *st.PrevRows != 0 {
-		t.Errorf("prev_rows = %v, want 0 (last import was already empty)", st.PrevRows)
+	if st.PrevRows == nil || *st.PrevRows != before {
+		t.Errorf("prev_rows = %v, want %d — the rejected run poisoned the baseline", st.PrevRows, before)
 	}
 	joined := strings.Join(third.Warnings, "\n")
 	if !strings.Contains(joined, comma(before)) {
@@ -233,8 +267,8 @@ func TestShrinkIsReported(t *testing.T) {
 }
 
 // The first import has nothing to compare against, and says that instead of
-// crying wolf. aTimeLogger is absent in these fixtures and never had rows — an
-// empty stream with no history is not a loss.
+// crying wolf. Every source is present and readable here — "no baseline" excuses
+// no claim about loss, and excuses nothing else.
 func TestFirstImportIsNotAWarning(t *testing.T) {
 	cfg, _ := lossCfg(t)
 
@@ -291,12 +325,12 @@ func TestLedgerSurvivesTheImportThatDeletesTheDB(t *testing.T) {
 		t.Errorf("stress ledger rows = %d, want >= 2 — the history died with the DB", generations)
 	}
 
-	// And a stream that imported nothing is on the record too. The zero is the
-	// fact we need next time.
-	var zeros int
-	db.QueryRow(`SELECT COUNT(*) FROM import_log WHERE table_name = 'atl_interval' AND rows_imported = 0`).Scan(&zeros)
-	if zeros == 0 {
-		t.Error("no zero-row entry logged — an empty stream left no trace")
+	// And every stream is on the record, zero or not. A zero that goes unrecorded
+	// is a loss that goes unnoticed next time.
+	var streams int
+	db.QueryRow(`SELECT COUNT(DISTINCT table_name) FROM import_log`).Scan(&streams)
+	if streams != 9 {
+		t.Errorf("ledger covers %d streams, want 9 — a stream left no trace", streams)
 	}
 }
 
@@ -454,5 +488,149 @@ func TestUnreadableLedgerIsNotAFreshStart(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(next.Warnings, "\n"), "ledger") {
 		t.Errorf("warnings = %q, want the unreadable ledger named", next.Warnings)
+	}
+}
+
+// Saying "I lost a stream" while handing over the DB that lost it is not much of a
+// warning. The live database — the one every later query reads — must still be the
+// one that has the data. The old code deleted it before building, so by the time
+// the warning printed there was nothing left to protect.
+func TestALosingRunIsNotPromoted(t *testing.T) {
+	cfg, shealth := lossCfg(t)
+
+	first, err := execImport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != statusOK {
+		t.Fatalf("first import: status = %q (%v)", first.Status, first.Warnings)
+	}
+	good := stream(t, first, "stress").Rows
+
+	truncateToHeader(t, filepath.Join(shealth, stressCSV))
+
+	second, err := execImport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != statusWarn {
+		t.Fatalf("status = %q, want %q", second.Status, statusWarn)
+	}
+	if second.CandidatePath == "" {
+		t.Error("candidate_path is empty — the rejected DB was not kept for inspection")
+	}
+
+	// The live DB still holds the stream the run lost.
+	db, err := openDB(dbPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var live int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM stress`).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != good {
+		t.Errorf("live stress rows = %d, want %d — the broken import was promoted over the good DB", live, good)
+	}
+
+	// And the candidate, which is the broken one, is on disk to be looked at.
+	cdb, err := openDB(second.CandidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cdb.Close()
+
+	var rejected int
+	cdb.QueryRow(`SELECT COUNT(*) FROM stress`).Scan(&rejected)
+	if rejected != 0 {
+		t.Errorf("candidate stress rows = %d, want 0 — wrong file was kept", rejected)
+	}
+}
+
+// "Nothing to compare against" excuses no claim about loss. It never excused
+// calling a source we could not read fine — and on a first import, that was
+// exactly what happened: no baseline, so no warning, so ok, so a missing export
+// shipped as a healthy database.
+func TestUnreadableSourceIsNotOKEvenOnTheFirstImport(t *testing.T) {
+	cfg, shealth := lossCfg(t)
+
+	if err := os.Remove(filepath.Join(shealth, stressCSV)); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := execImport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != statusWarn {
+		t.Errorf("status = %q, want %q — an unread source is not a healthy import", first.Status, statusWarn)
+	}
+	joined := strings.Join(first.Warnings, "\n")
+	if !strings.Contains(joined, "stress") || !strings.Contains(joined, "unreadable") {
+		t.Errorf("warnings = %q, want stress named unreadable", first.Warnings)
+	}
+
+	// There was no live DB to protect, so the run is still promoted — some data
+	// beats none, and the warning stands on the record either way.
+	if !dbExists(cfg) {
+		t.Error("no DB written — a first import with a bad source should still land, loudly")
+	}
+}
+
+// A ledger that cannot be written is a baseline the next run will not have. The
+// run says so and is held back: promoting a DB whose record failed to write is how
+// a future import comes to believe it is the first one.
+func TestLedgerWriteFailureBlocksPromotion(t *testing.T) {
+	cfg, _ := lossCfg(t)
+
+	first, err := execImport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := stream(t, first, "stress").Rows
+
+	// Make the ledger unwritable in the candidate: the schema is created fresh each
+	// run, so a trigger is the honest way to make INSERTs fail the way a real
+	// failure would (disk full, permissions, corruption).
+	orig := initSchema
+	t.Cleanup(func() { initSchema = orig })
+	initSchema = func(db *sql.DB) error {
+		if err := orig(db); err != nil {
+			return err
+		}
+		_, err := db.Exec(`CREATE TRIGGER no_ledger BEFORE INSERT ON import_log
+			BEGIN SELECT RAISE(ABORT, 'ledger is unwritable'); END`)
+		return err
+	}
+
+	second, err := execImport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != statusWarn {
+		t.Errorf("status = %q, want %q — the ledger write failed silently", second.Status, statusWarn)
+	}
+	if !strings.Contains(strings.Join(second.Warnings, "\n"), "ledger") {
+		t.Errorf("warnings = %q, want the ledger failure named", second.Warnings)
+	}
+
+	// The live DB is untouched, so the baseline survives.
+	db, err := openDB(dbPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var live int
+	db.QueryRow(`SELECT COUNT(*) FROM stress`).Scan(&live)
+	if live != good {
+		t.Errorf("live stress rows = %d, want %d", live, good)
+	}
+	var gens int
+	db.QueryRow(`SELECT COUNT(*) FROM import_log WHERE table_name = 'stress'`).Scan(&gens)
+	if gens != 1 {
+		t.Errorf("ledger generations = %d, want 1 — a run with no record was promoted", gens)
 	}
 }

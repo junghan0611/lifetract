@@ -1,0 +1,4 @@
+com.samsung.health.hrv,1000,3
+datauuid,start_time,rmssd,time_offset
+h-uuid-1,2025-01-15 03:20:00.000,42.5,UTC+0900
+h-uuid-2,2025-01-16 03:25:00.000,39.8,UTC+0900
