@@ -4,7 +4,63 @@
 
 ---
 
-## 닫힌 자리 (최근 turn)
+## ⏸ 커밋 대기 — 시간 계약 (2026-07-14, uncommitted)
+
+timeline 관측소(`junghan0611/timeline`)가 첫 *소비자* 로 붙으면서 시간축 구멍 4개가
+드러났다. 워킹트리에 수정 완료, **커밋/푸시/배포는 GLG 판단 대기**.
+
+- [x] **SQL `localtime` → `'+9 hours'`** — 셸 `$TZ` 가 날짜 귀속을 바꾸던 자리.
+      코드베이스 유일한 `localtime` 이었고, 시연된 버그 전부가 여기서 나왔다.
+- [x] **`cutoffTime` KST 자정 스냅** — 창 첫날이 잘려 있었다. `--days 3` 이 7/11 독서를
+      77.7 로, `--days 5` 는 477.2 로 답하던 자리. 조용히 400분이 사라졌다.
+- [x] **HA 라이브 축 stale** — heart_rate 센서가 **2026-07-03 에 112 로 얼어붙었는데**
+      `GetState` 가 그걸 계속 돌려줬고, punchout 이 11일간 저널에 "심박 평균 112" 를
+      박제했다. 신선도 가드 + `avg_hr` 을 진짜 평균(history)으로.
+- [x] **`--from/--to` 반개방 `[from, to)`** / **`status` 스트림별 최신성 + warnings**
+- [x] **AGENTS.md §3.5 시간 계약** — 고정 KST · 반개방 · 시작일 귀속 · 스스로 신고하는
+      낡음 + comment 프라이버시 경계. gitcli·denotecli 가 베껴갈 판본.
+- [x] **`lifetract/timeaxis_test.go`** (+ HA stale 2건) — 전부 *되돌려서 실패하는지*
+      확인함. in-process 로는 TZ 결정성을 못 잡는다 (SQLite 가 존을 프로세스 시작 때
+      고정) → 서브프로세스 × TZ 5개.
+
+**관측소 검산 통과**: TZ 3개 동일 해시, 깊이 0 8,400건 diff 0, 골든 케이스 유지.
+공유 바이너리 두 자리는 **안 건드림** (여전히 Jun 17 `e24a185f…`).
+
+### 배포하면 뒤따르는 것
+
+- 관측소 `collect.py` 가 `days+2` 여유 → `--from/--to` 로 갈아탄다 (관측소 쪽 작업).
+- `~/.claude/skills/lifetract/` + `~/repos/gh/agent-config/skills/lifetract/` 두 자리.
+
+## ✅ 닫힘 — 수면 축 (GLG 2026-07-14)
+
+**갈림길은 GLG 가 닫았다: Samsung export 가 본(本), HA 는 보조.**
+
+> "가끔은 데이터를 넣어줘야 된다. 마지막 임포트 시점에서 오래되면 말을 해줘.
+> **HA 로 끌고온 데이터보다 이 데이터가 우선이야.**"
+
+HA 를 재보니 그 판단이 맞았다 — 실측:
+
+- **HA recorder 보관 = 30일** (60/90/180 요청해도 같은 답). 영구 저장소가 아니다.
+- **HA 는 stages · score · efficiency 를 못 준다.** `sleep_segment` 로 start/end/
+  duration 까지가 한계고, 중복 resync 도 나온다.
+- 그래서 **HA→DB 흡수는 짓지 않는다.** HA 는 *오늘 자리* 라이브 fallback 으로 남는다.
+
+- [x] **새 export 넣음** (2026-07-14) — `samsunghealth_gtgkjh_20260714110176.zip`
+      → `self-tracking-data/`, `import --exec` (203,539 rows).
+      **`05-18`~`06-12` 26일 구멍 메워짐** (43세션, stages 포함).
+      2026 수면 **192/194일**, 세션 381건 **전부 stages**. 전 스트림 `07-13` 까지 신선,
+      `warnings` 없음.
+- [x] **AGENTS.md §2** — Samsung SSOT / HA 보조 우선순위 + "가끔은 사람이 넣어줘야
+      한다, 낡으면 도구가 먼저 말한다" + zip 경로(`~/sync/family/lifedata/`).
+
+## 도구 밖의 일 — 사람이 해야 함
+
+- **HA heart_rate 센서가 2026-07-03 부터 죽어 있다** (112 고정). 폰↔HA 연동.
+  *심박은 GLG 가 접었다 (2026-07-14) — 도구는 이제 죽은 값을 거부만 한다.*
+- 저널 7/03~7/13 의 "심박 평균 112" — 센서 고장의 흔적. 정정 여부는 GLG 판단.
+  (전례: 5월 week21 "HA 히스토리 기준 재산출" 보정 줄.)
+
+## 닫힌 자리 (이전 turn)
 
 - [x] **Phase 7 read-only fallback** (2026-05-26) — `today` / `read <오늘>` 이 DB miss/stale 자리를 HA `GetState` (steps/heart_rate) + `GetHistory` (sleep_duration 최근 36h 합산) 로 자동 채움. `source: "db+ha"`, `ha_sources` 자리 노출. 에이전트가 lifetract 부를 때 *life 정보를 무시하고 넘어가는 자리* 닫힘.
 - [x] **today.sleep_hours 가 옛 row 잡는 자리** (2026-05-26) — `todaySleepStale` heuristic 으로 DB 최근 sleep date ≠ today/yesterday 면 stale 판정 + HA 로 덮어씀.

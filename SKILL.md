@@ -191,12 +191,45 @@ lifetract ha history sleep_duration --days 7   # 7일치 state 변화 (HA record
 
 | Flag | Default | 설명 |
 |------|---------|------|
-| `--days N` | 7 | 조회 기간 |
+| `--days N` | 7 | 오늘 기준 상대 기간 |
+| `--from YYYY-MM-DD` | — | 창 시작 (포함). `--days` 를 덮어씀 |
+| `--to YYYY-MM-DD` | — | 창 끝 (**배타적**). `--days` 를 덮어씀 |
 | `--data-dir DIR` | `~/repos/gh/self-tracking-data` | 데이터 루트 |
 | `--shealth-dir DIR` | 최신 자동감지 | Samsung Health 디렉토리 |
 | `--summary` | false | 요약 모드 |
 | `--category CAT` | 전체 | 시간 카테고리 필터 |
 | `--exec` | false | import 실행 모드 |
+
+## 시간 계약 (Time Contract)
+
+에이전트가 이 CLI 의 숫자를 저널·노트에 **사실로 기록**하기 전에 알아야 할 넷.
+전문·근거는 [AGENTS.md §3.5](AGENTS.md), 강제는 `lifetract/timeaxis_test.go`.
+
+**1. 모든 날짜는 KST 고정.** 호출한 셸의 `$TZ` 가 답을 바꾸지 못한다.
+
+**2. 창은 반개방 `[from, to)`.** `--to` 는 배타적:
+
+```bash
+lifetract time --from 2026-07-01 --to 2026-07-08   # 7일 (7/1 ~ 7/7)
+```
+
+경계는 KST 자정이다. `--days 3` 과 `--days 5` 는 같은 과거 날짜에 대해 **같은
+답**을 낸다 — 창을 넓혀도 과거는 안 바뀐다.
+
+**재현이 필요하면 `--from/--to` 를 써라.** `--days` 는 오늘 기준이라 내일이면
+다른 질문이 된다. 저널에 박아 넣을 숫자라면 특히.
+
+**3. 블록은 시작일에 귀속.** 수면 `21:14 → 05:48` 은 전부 시작한 날의 것.
+자정을 넘어도 쪼개지 않는다.
+
+**4. `status` 가 낡음을 신고한다.** 숫자를 믿기 전에 봐라:
+
+```bash
+lifetract status | jq '.database | {last_time_block, stale_days, warnings}'
+```
+
+`warnings` 가 비어 있지 않으면 폰 export 가 멈춘 것이다. **적은 숫자가 나오는
+게 "그날 아무것도 안 했다"는 뜻이 아니다.**
 
 ## Denote ID 체계
 
