@@ -354,10 +354,14 @@ func TestLedgerSurvivesTheImportThatDeletesTheDB(t *testing.T) {
 
 	// And every stream is on the record, zero or not. A zero that goes unrecorded
 	// is a loss that goes unnoticed next time.
+	// 10, not 9: atl_category is a stream of its own now. It used to be imported
+	// without being counted, so a category table that emptied out took the whole
+	// time axis with it (dbQueryTime joins through it) while the ledger watched the
+	// interval count sit there, unchanged and reassuring.
 	var streams int
 	db.QueryRow(`SELECT COUNT(DISTINCT table_name) FROM import_log`).Scan(&streams)
-	if streams != 9 {
-		t.Errorf("ledger covers %d streams, want 9 — a stream left no trace", streams)
+	if streams != 10 {
+		t.Errorf("ledger covers %d streams, want 10 — a stream left no trace", streams)
 	}
 }
 
@@ -599,10 +603,44 @@ func TestUnreadableSourceIsNotOKEvenOnTheFirstImport(t *testing.T) {
 		t.Errorf("warnings = %q, want stress named unreadable", first.Warnings)
 	}
 
-	// There was no live DB to protect, so the run is still promoted — some data
-	// beats none, and the warning stands on the record either way.
+	// And it does not land. This test used to assert the opposite — "some data beats
+	// none" — and that was the hole: eight streams import, one cannot be read, and
+	// the partial DB installs itself. From then on the missing stream answers [] and
+	// the tool has no error path left to tell the truth with, because now there IS a
+	// database. A bootstrap that quietly drops a stream is where "I could not look"
+	// becomes "there is nothing", permanently.
+	if dbExists(cfg) {
+		t.Error("a DB with a stream missing was promoted — from now on that stream is just 'empty'")
+	}
+	if first.CandidatePath == "" {
+		t.Error("no candidate kept — there is nothing left to inspect")
+	}
+}
+
+// The stopgap is available, but it has to be asked for out loud, and the payload
+// says what it is. An operator bootstrapping from a partial export is a decision;
+// a tool making that decision on its own is the silence again.
+func TestPartialBootstrapMustBeAskedFor(t *testing.T) {
+	cfg, shealth := lossCfg(t)
+	cfg.AllowPartial = true
+
+	if err := os.Remove(filepath.Join(shealth, stressCSV)); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := execImport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if !dbExists(cfg) {
-		t.Error("no DB written — a first import with a bad source should still land, loudly")
+		t.Fatal("--allow-partial did not promote the bootstrap import")
+	}
+	if !first.Partial {
+		t.Error("partial = false — a stopgap database must say that it is one")
+	}
+	if first.Status != statusWarn {
+		t.Errorf("status = %q, want warning — the missing stream is still missing", first.Status)
 	}
 }
 

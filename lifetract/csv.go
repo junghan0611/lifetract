@@ -42,15 +42,26 @@ func shealthReadCSV(path string) ([]string, []map[string]string, error) {
 		headers[0] = stripBOM(headers[0])
 	}
 
-	// Read all records
+	// A row that will not parse is not a row that isn't there.
+	//
+	// This used to `continue`, and the read still returned success. So a corrupted
+	// export lost rows quietly, and — because Samsung's export is cumulative — the
+	// new rows in the next dump could cover the loss, leaving the count higher than
+	// last time and the shrink guard with nothing to see. The whole file is refused
+	// instead: import reports it and does not promote, and the live DB stands.
+	//
+	// Measured against the real export at the time this was written: 0 malformed
+	// rows in 335,299. Refusing them costs nothing and buys the silence back.
 	var records []map[string]string
+	line := 2 // metadata + header are already consumed
 	for {
 		row, err := reader.Read()
 		if err == io.EOF {
 			break
 		}
+		line++
 		if err != nil {
-			continue
+			return nil, nil, fmt.Errorf("malformed row at line %d of %s: %w", line, filepath.Base(path), err)
 		}
 
 		rec := make(map[string]string, len(headers))

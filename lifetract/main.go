@@ -84,19 +84,29 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+	if err := checkFlagsFor(cmd, flags); err != nil {
+		fail(err)
+	}
+	positional := positionalArgs(args)
+	if err := checkPositionalFor(cmd, positional); err != nil {
+		fail(err)
+	}
 	cfg, err := newConfig(flags)
 	if err != nil {
 		fail(err)
 	}
 
 	// Extract positional arg (for read command)
-	if len(args) > 0 && !strings.HasPrefix(args[0], "--") {
-		cfg.ReadID = args[0]
+	if len(positional) > 0 {
+		cfg.ReadID = positional[0]
 	}
 
 	// --exec flag
 	if flags["exec"] == "true" {
 		cfg.Exec = true
+	}
+	if flags["allow-partial"] == "true" {
+		cfg.AllowPartial = true
 	}
 
 	var result interface{}
@@ -129,11 +139,11 @@ func main() {
 	case "ha":
 		sub := ""
 		haArg := ""
-		if len(args) > 0 && !strings.HasPrefix(args[0], "--") {
-			sub = args[0]
+		if len(positional) > 0 {
+			sub = positional[0]
 		}
-		if len(args) > 1 && !strings.HasPrefix(args[1], "--") {
-			haArg = args[1]
+		if len(positional) > 1 {
+			haArg = positional[1]
 		}
 		result, err = cmdHA(cfg, sub, haArg)
 	default:
@@ -177,12 +187,95 @@ func emptyList(v interface{}) interface{} {
 // Every flag the CLI understands. A flag not in here is a typo, and a typo has to
 // be told, not absorbed.
 var (
-	boolFlags  = map[string]bool{"summary": true, "exec": true}
+	boolFlags  = map[string]bool{"summary": true, "exec": true, "allow-partial": true}
 	valueFlags = map[string]bool{
 		"days": true, "from": true, "to": true,
 		"category": true, "data-dir": true, "shealth-dir": true,
 	}
 )
+
+// Where each flag actually means something. Being known is not the same as being
+// listened to: `heart --exec` and `status --from 2026-07-01` were accepted in
+// silence and changed nothing, which is the same lie as a typo being swallowed —
+// the caller believes they asked for something they did not get.
+//
+// The source paths (--data-dir, --shealth-dir) are read by newConfig for every
+// command, so they are allowed everywhere.
+var commandFlags = map[string]map[string]bool{
+	"status":   {},
+	"today":    {},
+	"timeline": {"days": true, "from": true, "to": true},
+	"read":     {},
+	"sleep":    {"days": true, "from": true, "to": true, "summary": true},
+	"steps":    {"days": true, "from": true, "to": true},
+	"heart":    {"days": true, "from": true, "to": true},
+	"stress":   {"days": true, "from": true, "to": true},
+	"exercise": {"days": true, "from": true, "to": true},
+	"time":     {"days": true, "from": true, "to": true, "category": true, "summary": true},
+	"import":   {"exec": true, "allow-partial": true},
+	"export":   {},
+	"ha":       {},
+}
+
+var globalFlags = map[string]bool{"data-dir": true, "shealth-dir": true}
+
+// checkFlagsFor rejects a flag this command would ignore.
+func checkFlagsFor(cmd string, flags map[string]string) error {
+	allowed, known := commandFlags[cmd]
+	if !known {
+		return nil // unknown command: main reports that itself
+	}
+	for f := range flags {
+		if globalFlags[f] || allowed[f] {
+			continue
+		}
+		return fmt.Errorf("--%s means nothing to %q — it would be ignored", f, cmd)
+	}
+	return nil
+}
+
+// How many bare words each command takes. `heart nonsense` used to be accepted and
+// dropped: the caller misspelled something, got a clean answer to a question they
+// had not asked, and had no way to know.
+var commandPositionals = map[string]int{
+	"status": 0, "today": 0, "timeline": 0, "read": 1,
+	"sleep": 0, "steps": 0, "heart": 0, "stress": 0, "exercise": 0, "time": 0,
+	"import": 0, "export": 0, "ha": 2, // ha <sub> [arg]
+}
+
+// positionalArgs collects the bare words, skipping the values that belong to
+// flags — so `--from 2026-07-01` does not look like a stray argument.
+func positionalArgs(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "--") {
+			out = append(out, a)
+			continue
+		}
+		if valueFlags[strings.TrimPrefix(a, "--")] {
+			i++ // its value is not a positional
+		}
+	}
+	return out
+}
+
+func checkPositionalFor(cmd string, positional []string) error {
+	max, known := commandPositionals[cmd]
+	if !known {
+		return nil
+	}
+	if len(positional) > max {
+		if max == 0 {
+			return fmt.Errorf("%q takes no arguments, got %q", cmd, positional[0])
+		}
+		return fmt.Errorf("%q takes at most %d argument(s), got %d", cmd, max, len(positional))
+	}
+	if cmd == "read" && len(positional) == 0 {
+		return fmt.Errorf("read needs a Denote ID or date (YYYY-MM-DD)")
+	}
+	return nil
+}
 
 // parseFlags parses --key value pairs, and refuses everything it does not
 // understand.

@@ -28,14 +28,19 @@ func dbQuerySleep(cfg *Config, w Window) ([]SleepRecord, error) {
 	defer rows.Close()
 
 	// Pre-load stages grouped by sleep UUID
-	stageMap := dbLoadSleepStages(db)
+	stageMap, err := dbLoadSleepStages(db)
+	if err != nil {
+		return nil, err
+	}
 
 	var results []SleepRecord
 	for rows.Next() {
 		var id, uuid, startStr, endStr string
 		var durMin, eff, lightMin, remMin sql.NullFloat64
 		var score sql.NullInt64
-		rows.Scan(&id, &uuid, &startStr, &endStr, &durMin, &score, &eff, &lightMin, &remMin)
+		if err := rows.Scan(&id, &uuid, &startStr, &endStr, &durMin, &score, &eff, &lightMin, &remMin); err != nil {
+			return nil, fmt.Errorf("read row: %w", err)
+		}
 
 		start, _ := parseShealthTime(startStr)
 		end, _ := parseShealthTime(endStr)
@@ -67,13 +72,21 @@ func dbQuerySleep(cfg *Config, w Window) ([]SleepRecord, error) {
 		}
 		results = append(results, sr)
 	}
+	// An iteration that stopped early returns fewer rows than the query matched,
+	// and every one of them looks like an ordinary quiet day.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read rows: %w", err)
+	}
 	return results, nil
 }
 
-func dbLoadSleepStages(db *sql.DB) map[string]*SleepStages {
+// dbLoadSleepStages returns the stage breakdown per sleep session. It reports its
+// failures: a stage table that cannot be read used to come back as an empty map,
+// and every night then looked like a night the watch recorded no stages.
+func dbLoadSleepStages(db *sql.DB) (map[string]*SleepStages, error) {
 	rows, err := db.Query(`SELECT sleep_uuid, stage, start_time, end_time FROM sleep_stage`)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -81,7 +94,9 @@ func dbLoadSleepStages(db *sql.DB) map[string]*SleepStages {
 	for rows.Next() {
 		var uuid, startStr, endStr string
 		var stage int
-		rows.Scan(&uuid, &stage, &startStr, &endStr)
+		if err := rows.Scan(&uuid, &stage, &startStr, &endStr); err != nil {
+			return nil, fmt.Errorf("read row: %w", err)
+		}
 
 		start, _ := parseShealthTime(startStr)
 		end, _ := parseShealthTime(endStr)
@@ -103,13 +118,17 @@ func dbLoadSleepStages(db *sql.DB) map[string]*SleepStages {
 			s.RemMin += dur
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read sleep stages: %w", err)
+	}
+
 	for _, s := range result {
 		s.DeepMin = math.Round(s.DeepMin*10) / 10
 		s.LightMin = math.Round(s.LightMin*10) / 10
 		s.RemMin = math.Round(s.RemMin*10) / 10
 		s.AwakeMin = math.Round(s.AwakeMin*10) / 10
 	}
-	return result
+	return result, nil
 }
 
 // dbQuerySteps returns daily step records from DB.
@@ -134,7 +153,9 @@ func dbQuerySteps(cfg *Config, w Window) ([]StepRecord, error) {
 	for rows.Next() {
 		var date string
 		var total int
-		rows.Scan(&date, &total)
+		if err := rows.Scan(&date, &total); err != nil {
+			return nil, fmt.Errorf("read row: %w", err)
+		}
 		if total > 0 {
 			results = append(results, StepRecord{
 				ID:    denoteDayID(date),
@@ -142,6 +163,11 @@ func dbQuerySteps(cfg *Config, w Window) ([]StepRecord, error) {
 				Steps: total,
 			})
 		}
+	}
+	// An iteration that stopped early returns fewer rows than the query matched,
+	// and every one of them looks like an ordinary quiet day.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read rows: %w", err)
 	}
 	return results, nil
 }
@@ -172,9 +198,16 @@ func dbQueryHeart(cfg *Config, w Window) ([]HeartRecord, error) {
 	var results []HeartRecord
 	for rows.Next() {
 		var r HeartRecord
-		rows.Scan(&r.Date, &r.AvgHR, &r.MinHR, &r.MaxHR, &r.Samples)
+		if err := rows.Scan(&r.Date, &r.AvgHR, &r.MinHR, &r.MaxHR, &r.Samples); err != nil {
+			return nil, fmt.Errorf("read row: %w", err)
+		}
 		r.ID = denoteDayID(r.Date)
 		results = append(results, r)
+	}
+	// An iteration that stopped early returns fewer rows than the query matched,
+	// and every one of them looks like an ordinary quiet day.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read rows: %w", err)
 	}
 	return results, nil
 }
@@ -205,9 +238,16 @@ func dbQueryStress(cfg *Config, w Window) ([]StressRecord, error) {
 	var results []StressRecord
 	for rows.Next() {
 		var r StressRecord
-		rows.Scan(&r.Date, &r.AvgScore, &r.MinScore, &r.MaxScore, &r.Samples)
+		if err := rows.Scan(&r.Date, &r.AvgScore, &r.MinScore, &r.MaxScore, &r.Samples); err != nil {
+			return nil, fmt.Errorf("read row: %w", err)
+		}
 		r.ID = denoteDayID(r.Date)
 		results = append(results, r)
+	}
+	// An iteration that stopped early returns fewer rows than the query matched,
+	// and every one of them looks like an ordinary quiet day.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read rows: %w", err)
 	}
 	return results, nil
 }
@@ -237,7 +277,9 @@ func dbQueryExercise(cfg *Config, w Window) ([]ExerciseRecord, error) {
 		var exType sql.NullInt64
 		var durMs sql.NullInt64
 		var cal, meanHR, maxHR sql.NullFloat64
-		rows.Scan(&id, &startStr, &exType, &durMs, &cal, &meanHR, &maxHR)
+		if err := rows.Scan(&id, &startStr, &exType, &durMs, &cal, &meanHR, &maxHR); err != nil {
+			return nil, fmt.Errorf("read row: %w", err)
+		}
 
 		start, _ := parseShealthTime(startStr)
 		durMin := float64(durMs.Int64) / 60000.0
@@ -270,6 +312,11 @@ func dbQueryExercise(cfg *Config, w Window) ([]ExerciseRecord, error) {
 			r.MaxHR = math.Round(maxHR.Float64*10) / 10
 		}
 		results = append(results, r)
+	}
+	// An iteration that stopped early returns fewer rows than the query matched,
+	// and every one of them looks like an ordinary quiet day.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read rows: %w", err)
 	}
 	return results, nil
 }
@@ -313,7 +360,9 @@ func dbQueryTime(cfg *Config, w Window) ([]TimeRecord, error) {
 	for rows.Next() {
 		var name, date string
 		var minutes float64
-		rows.Scan(&name, &date, &minutes)
+		if err := rows.Scan(&name, &date, &minutes); err != nil {
+			return nil, fmt.Errorf("read row: %w", err)
+		}
 
 		// Optional category filter
 		if cfg.Category != "" && name != cfg.Category {
@@ -333,6 +382,11 @@ func dbQueryTime(cfg *Config, w Window) ([]TimeRecord, error) {
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Date > results[j].Date
 	})
+	// An iteration that stopped early returns fewer rows than the query matched,
+	// and every one of them looks like an ordinary quiet day.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read rows: %w", err)
+	}
 	return results, nil
 }
 
@@ -469,7 +523,10 @@ func dbQueryEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
 		if eff.Valid {
 			sr.Efficiency = math.Round(eff.Float64*10) / 10
 		}
-		stageMap := dbLoadSleepStages(db)
+		stageMap, err := dbLoadSleepStages(db)
+		if err != nil {
+			return nil, err
+		}
 		if stages, ok := stageMap[uuid]; ok {
 			sr.Stages = stages
 		}

@@ -48,11 +48,27 @@ func csvReadDay(cfg *Config, day time.Time) (interface{}, error) {
 	dateS := dateStr(day)
 	dayID := denoteDayID(dateS)
 
-	sleepRecs, _ := parseSleepRecords(cfg, allTime())
-	stepRecs, _ := parseStepRecords(cfg, allTime())
-	heartRecs, _ := parseHeartRecords(cfg, allTime())
-	stressRecs, _ := parseStressRecords(cfg, allTime())
-	exerciseRecs, _ := parseExerciseRecords(cfg, allTime())
+	// A source that could not be read is not a day without that measurement.
+	sleepRecs, err := parseSleepRecords(cfg, allTime())
+	if err != nil {
+		return nil, fmt.Errorf("sleep: %w", err)
+	}
+	stepRecs, err := parseStepRecords(cfg, allTime())
+	if err != nil {
+		return nil, fmt.Errorf("steps: %w", err)
+	}
+	heartRecs, err := parseHeartRecords(cfg, allTime())
+	if err != nil {
+		return nil, fmt.Errorf("heart: %w", err)
+	}
+	stressRecs, err := parseStressRecords(cfg, allTime())
+	if err != nil {
+		return nil, fmt.Errorf("stress: %w", err)
+	}
+	exerciseRecs, err := parseExerciseRecords(cfg, allTime())
+	if err != nil {
+		return nil, fmt.Errorf("exercise: %w", err)
+	}
 
 	entry := &TimelineEntry{ID: dayID, Date: dateS}
 
@@ -118,14 +134,20 @@ func csvReadDay(cfg *Config, day time.Time) (interface{}, error) {
 
 // csvReadEvent finds a specific event by exact Denote ID (CSV mode).
 func csvReadEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
-	sleepRecs, _ := parseSleepRecords(cfg, allTime())
+	sleepRecs, err := parseSleepRecords(cfg, allTime())
+	if err != nil {
+		return nil, fmt.Errorf("sleep: %w", err)
+	}
 	for _, r := range sleepRecs {
 		if r.ID == id {
 			return r, nil
 		}
 	}
 
-	exerciseRecs, _ := parseExerciseRecords(cfg, allTime())
+	exerciseRecs, err := parseExerciseRecords(cfg, allTime())
+	if err != nil {
+		return nil, fmt.Errorf("exercise: %w", err)
+	}
 	for _, r := range exerciseRecs {
 		if r.ID == id {
 			return r, nil

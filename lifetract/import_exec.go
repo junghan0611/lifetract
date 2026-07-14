@@ -92,37 +92,76 @@ func execImport(cfg *Config) (*ImportResult, error) {
 		result.record(base, f.name, "samsung_health", rows, rejected, err, db, cfg.ShealthDir)
 	}
 
-	// aTimeLogger. The stream is named for what is counted (intervals), because
-	// the ledger is keyed by that name and a name that drifts is a baseline that
-	// never matches.
-	atlRows, atlRejected, atlErr := importATimeLogger(db, cfg)
-	result.record(base, "atl_interval", "atimelogger", atlRows, atlRejected, atlErr, db, cfg.ATimeLoggerDB)
+	// aTimeLogger. Categories are a stream in their own right, not scaffolding for
+	// the intervals: dbQueryTime joins the two, so a category that disappears takes
+	// its blocks out of every answer while the interval count sits there unchanged.
+	// The ledger watched the intervals and saw nothing wrong as the time axis went
+	// to zero. A stream nobody counts is a stream nobody can miss.
+	atl, atlErr := importATimeLogger(db, cfg)
+	result.record(base, "atl_category", "atimelogger", atl.categories, 0, atlErr, db, cfg.ATimeLoggerDB)
+	result.record(base, "atl_interval", "atimelogger", atl.intervals, atl.rejected, atlErr, db, cfg.ATimeLoggerDB)
 
-	// VACUUM for compact size
-	db.Exec("VACUUM")
+	// Counts alone would still miss a category that was renamed away underneath its
+	// blocks. So the join itself is checked: a block pointing at a category this
+	// import does not have is a block no query will ever return.
+	if atlErr == nil {
+		if orphans, err := countOrphanIntervals(db); err != nil {
+			result.warn("could not check aTimeLogger blocks against their categories — not promoting: " + err.Error())
+		} else if orphans > 0 {
+			result.warn(fmt.Sprintf(
+				"atl_interval: %s blocks point at a category this import does not have — "+
+					"they are in the table and will appear in no time query", comma(orphans)))
+		}
+	}
 
-	// Fold the WAL back into the file before anything renames it: the sidecars are
-	// not moved with it, and a DB promoted without its WAL is a DB missing whatever
-	// the WAL still held.
-	db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	// VACUUM for compact size.
+	if _, err := db.Exec("VACUUM"); err != nil {
+		return nil, fmt.Errorf("vacuum candidate: %w", err)
+	}
+
+	// Fold the WAL back into the file before anything renames it. The sidecars do
+	// not travel with the rename, so a checkpoint that failed and was ignored meant
+	// promoting a file that is missing whatever the WAL still held — a database
+	// silently short of the rows we just counted in it.
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return nil, fmt.Errorf("checkpoint candidate: %w", err)
+	}
 	if err := db.Close(); err != nil {
 		return nil, fmt.Errorf("close candidate: %w", err)
 	}
 
-	// Promote only a sound run. A warning means the live DB — which still has the
-	// stream this run lost — stays exactly where it is.
+	// And the WAL is gone, not merely asked to go. TRUNCATE can report success and
+	// leave a file behind if a reader still holds the DB; that file would be left
+	// next to the candidate and never move with it.
+	if info, err := os.Stat(candidate + "-wal"); err == nil && info.Size() > 0 {
+		return nil, fmt.Errorf("candidate still has a %d-byte WAL after checkpoint — not promoting a database that is missing part of itself", info.Size())
+	}
+
+	// Only a sound run is promoted. Nothing else, and no exception for the first
+	// one.
 	//
-	// With no live DB to protect, a warning still promotes: some data beats none,
-	// and the warning is on the record either way. But "some data" has to be some.
-	// A first run where every source failed to read used to promote an empty file
-	// into the live path, and from then on every query answered [] — the tool
-	// reporting a life with nothing in it because it could not open a single CSV.
-	// That is the "I could not look" / "there is nothing" collapse again, in the
-	// one place where it becomes permanent.
+	// The old rule promoted any non-empty run when there was no live DB to protect,
+	// on the theory that some data beats none. But "some data" hid the shape that
+	// actually happens: eight Samsung streams import, aTimeLogger cannot be read,
+	// and the run — carrying a warning that says in so many words "not promoting" —
+	// installs itself as the live DB. From then on the time axis answers [], and
+	// the tool has stopped saying it could not look, because now there IS a DB and
+	// the honest error path is gone. A bootstrap that quietly drops a stream is
+	// where "I could not look" becomes "there is nothing", permanently.
+	//
+	// So a partial bootstrap has to be asked for, out loud, with --allow-partial —
+	// and it says so in the payload afterwards. Over a live DB there is no such
+	// flag: the sound database always wins.
 	live := dbExists(cfg)
 	empty := result.TotalRows == 0
 	switch {
-	case result.Status == statusOK || (!live && !empty):
+	case result.Status == statusOK:
+		if err := promoteDB(candidate, path); err != nil {
+			return nil, fmt.Errorf("promote: %w", err)
+		}
+		result.DBPath = path
+	case !live && !empty && cfg.AllowPartial:
+		result.Partial = true
 		if err := promoteDB(candidate, path); err != nil {
 			return nil, fmt.Errorf("promote: %w", err)
 		}
@@ -130,12 +169,16 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	default:
 		result.DBPath = path // untouched, and still the good one
 		result.CandidatePath = candidate
-		if !live {
-			result.warn("nothing was imported — an empty database is not promoted. " +
-				"Check the export before trusting any query: " + candidate)
-		} else {
+		switch {
+		case live:
 			result.warn("live DB left untouched — this run was not promoted. " +
 				"The candidate is kept for inspection: " + candidate)
+		case empty:
+			result.warn("nothing was imported — an empty database is not promoted. " +
+				"Check the export before trusting any query: " + candidate)
+		default:
+			result.warn("this run is incomplete and there is no DB to fall back on — not promoted. " +
+				"Fix the export, or bootstrap deliberately with --allow-partial. Candidate: " + candidate)
 		}
 	}
 
@@ -209,7 +252,11 @@ type ImportResult struct {
 	// threw rows away and did not say so is the same silence as one that lost
 	// them. It is a separate channel from warnings because a refusal is not a
 	// failure: warnings block promotion, an accounted-for refusal does not.
-	Rejected      []string      `json:"rejected"`
+	Rejected []string `json:"rejected"`
+	// Partial is true when this DB was promoted despite warnings, because the
+	// operator asked for it (--allow-partial) with nothing to fall back on. A
+	// consumer must be able to tell a complete database from a deliberate stopgap.
+	Partial       bool          `json:"partial,omitempty"`
 	Note          string        `json:"note,omitempty"`
 	BaselineAt    string        `json:"baseline_at,omitempty"`
 	Tables        []TableResult `json:"tables"`
@@ -875,14 +922,36 @@ func importHRV(db *sql.DB, cfg *Config) (int, int, error) {
 
 // --- aTimeLogger importer ---
 
-func importATimeLogger(db *sql.DB, cfg *Config) (int, int, error) {
+// atlCounts keeps the two aTimeLogger streams apart. They fail independently and
+// only one of them used to be counted.
+type atlCounts struct {
+	categories int
+	intervals  int
+	rejected   int
+}
+
+// countOrphanIntervals counts blocks whose category is not in the DB. dbQueryTime
+// joins atl_interval to atl_category, so an orphan is a block that exists and can
+// never be seen — the quietest loss in the schema.
+func countOrphanIntervals(db *sql.DB) (int, error) {
+	var n int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM atl_interval i
+		LEFT JOIN atl_category c ON c.id = i.category_id
+		WHERE i.is_deleted = 0 AND c.id IS NULL`).Scan(&n)
+	return n, err
+}
+
+func importATimeLogger(db *sql.DB, cfg *Config) (atlCounts, error) {
+	var counts atlCounts
+
 	if _, err := os.Stat(cfg.ATimeLoggerDB); err != nil {
-		return 0, 0, fmt.Errorf("atimelogger db not found: %s", cfg.ATimeLoggerDB)
+		return counts, fmt.Errorf("atimelogger db not found: %s", cfg.ATimeLoggerDB)
 	}
 
 	srcDB, err := sql.Open("sqlite", cfg.ATimeLoggerDB)
 	if err != nil {
-		return 0, 0, fmt.Errorf("open atimelogger: %w", err)
+		return counts, fmt.Errorf("open atimelogger: %w", err)
 	}
 	defer srcDB.Close()
 
@@ -891,13 +960,13 @@ func importATimeLogger(db *sql.DB, cfg *Config) (int, int, error) {
 	// it lost their name silently.
 	rows, err := srcDB.Query(`SELECT id, name, color, is_group, parent_id FROM activity_type`)
 	if err != nil {
-		return 0, 0, err
+		return counts, err
 	}
 	defer rows.Close()
 
 	cats, err := newInserter(db, `INSERT OR REPLACE INTO atl_category (id, name, color, is_group, parent_id) VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return counts, err
 	}
 	for rows.Next() {
 		var id, isGroup, parentID int
@@ -905,23 +974,24 @@ func importATimeLogger(db *sql.DB, cfg *Config) (int, int, error) {
 		var color sql.NullInt64
 		if err := rows.Scan(&id, &name, &color, &isGroup, &parentID); err != nil {
 			cats.done()
-			return 0, 0, fmt.Errorf("read category: %w", err)
+			return counts, fmt.Errorf("read category: %w", err)
 		}
 		cats.exec(id, name, color.Int64, isGroup, parentID)
+		counts.categories++
 	}
 	if err := rows.Err(); err != nil {
 		cats.done()
-		return 0, 0, fmt.Errorf("read categories: %w", err)
+		return counts, fmt.Errorf("read categories: %w", err)
 	}
 	if _, err := cats.done(); err != nil {
-		return 0, 0, err
+		return counts, err
 	}
 
 	// Intervals (time_interval2 holds the actual blocks).
 	iRows, err := srcDB.Query(`SELECT id, guid, start, finish, comment, activity_type_id, is_deleted
 		FROM time_interval2`)
 	if err != nil {
-		return 0, 0, err
+		return counts, err
 	}
 	defer iRows.Close()
 
@@ -929,36 +999,35 @@ func importATimeLogger(db *sql.DB, cfg *Config) (int, int, error) {
 		(id, guid, start_time, end_time, comment, category_id, is_deleted)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return counts, err
 	}
 
-	count, rejected := 0, 0
 	for iRows.Next() {
 		var id, start, finish, catID, isDeleted int
 		var guid, comment sql.NullString
 		if err := iRows.Scan(&id, &guid, &start, &finish, &comment, &catID, &isDeleted); err != nil {
 			in.done()
-			return 0, 0, fmt.Errorf("read interval: %w", err)
+			return counts, fmt.Errorf("read interval: %w", err)
 		}
 		// aTimeLogger stores unix seconds; a zero start is epoch, not a block.
 		if isSentinelTime(time.Unix(int64(start), 0)) {
-			rejected++
+			counts.rejected++
 			continue
 		}
 		in.exec(id, guid.String, start, finish, comment.String, catID, isDeleted)
-		count++
+		counts.intervals++
 	}
 	// An iteration that stopped early read fewer blocks than the phone holds, and
 	// the count would have looked like a perfectly ordinary smaller number.
 	if err := iRows.Err(); err != nil {
 		in.done()
-		return 0, 0, fmt.Errorf("read intervals: %w", err)
+		return counts, fmt.Errorf("read intervals: %w", err)
 	}
 	if _, err := in.done(); err != nil {
-		return 0, 0, err
+		return counts, err
 	}
 
-	return count, rejected, nil
+	return counts, nil
 }
 
 // parseInt, parseFloat, firstNonEmpty → helpers.go

@@ -22,6 +22,7 @@ type Config struct {
 	Category      string
 	ReadID        string // Denote ID for read command
 	Exec          bool   // Execute mode (for import)
+	AllowPartial  bool   // promote a warning-carrying bootstrap import (no live DB)
 }
 
 // queryWindow is the window range commands cover: an explicit --from/--to when

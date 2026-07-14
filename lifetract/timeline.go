@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sort"
 )
 
@@ -48,29 +47,38 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 //
 // Every source error used to go into `_`. A timeline missing three of its six
 // feeds came back looking exactly like a timeline of three quiet days — the tool
-// could not see, and reported that there was nothing to see. The rows still go to
-// stdout (a caller must always get a list), but a source that did not answer is
-// named on stderr instead of being folded into the silence.
+// could not see, and reported there was nothing to see.
+//
+// A warning on stderr is not enough: the caller of this CLI is an agent, it reads
+// stdout, and a JSON list that parses cleanly is a JSON list it will believe. So a
+// source that cannot be read fails the command. An answer nobody can trust is
+// worth less than no answer.
 func csvTimeline(cfg *Config) (interface{}, error) {
 	w := cfg.queryWindow()
 
-	sleepRecs, errSleep := parseSleepRecords(cfg, w)
-	stepRecs, errSteps := parseStepRecords(cfg, w)
-	heartRecs, errHeart := parseHeartRecords(cfg, w)
-	stressRecs, errStress := parseStressRecords(cfg, w)
-	exerciseRecs, errExercise := parseExerciseRecords(cfg, w)
-	timeRecs, errTime := parseTimeRecords(cfg, w)
-
-	for _, src := range []struct {
-		name string
-		err  error
-	}{
-		{"sleep", errSleep}, {"steps", errSteps}, {"heart", errHeart},
-		{"stress", errStress}, {"exercise", errExercise}, {"time", errTime},
-	} {
-		if src.err != nil {
-			fmt.Fprintf(os.Stderr, "warning: %s missing from this timeline — %v\n", src.name, src.err)
-		}
+	sleepRecs, err := parseSleepRecords(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("sleep: %w", err)
+	}
+	stepRecs, err := parseStepRecords(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("steps: %w", err)
+	}
+	heartRecs, err := parseHeartRecords(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("heart: %w", err)
+	}
+	stressRecs, err := parseStressRecords(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("stress: %w", err)
+	}
+	exerciseRecs, err := parseExerciseRecords(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("exercise: %w", err)
+	}
+	timeRecs, err := parseTimeRecords(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("time: %w", err)
 	}
 
 	return buildTimeline(stepRecs, sleepRecs, heartRecs, stressRecs, exerciseRecs, timeRecs), nil

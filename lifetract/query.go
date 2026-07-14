@@ -177,6 +177,14 @@ func addDBFreshness(cfg *Config, st *DBStatus) {
 		}
 
 		behind := int(today.Sub(parsed).Hours() / 24)
+		if behind < 0 {
+			// A record dated after today is a clock that is wrong somewhere, and a
+			// negative "days behind" sailed through the freshness check as the
+			// freshest thing in the DB.
+			st.Warnings = append(st.Warnings, fmt.Sprintf(
+				"%s: newest record is dated %s, in the future — the source clock is wrong", s.name, last))
+			continue
+		}
 		if behind > st.StaleDays {
 			st.StaleDays = behind
 		}
@@ -224,35 +232,85 @@ func cmdToday(cfg *Config) (interface{}, error) {
 		Date: dateStr(cutoffTime(0)),
 	}
 
+	// A source that fails to answer is not a source that answered zero. Every one of
+	// these used to be `err == nil &&` — so a broken table left the field at its zero
+	// value and today reported 0 steps, 0 hours of sleep, a resting heart rate of
+	// nothing. The numbers were indistinguishable from a day spent lying still, and
+	// they were going into a journal as fact.
 	if dbExists(cfg) {
 		result.Source = "db"
-		if steps, err := dbQuerySteps(cfg, daysWindow(1)); err == nil && len(steps) > 0 {
+
+		steps, err := dbQuerySteps(cfg, daysWindow(1))
+		if err != nil {
+			return nil, fmt.Errorf("steps: %w", err)
+		}
+		if len(steps) > 0 {
 			result.Steps = steps[0].Steps
 		}
-		if sleeps, err := dbQuerySleep(cfg, daysWindow(2)); err == nil && len(sleeps) > 0 {
+
+		sleeps, err := dbQuerySleep(cfg, daysWindow(2))
+		if err != nil {
+			return nil, fmt.Errorf("sleep: %w", err)
+		}
+		if len(sleeps) > 0 {
 			result.SleepHours = sleeps[0].DurationHours
 		}
-		if hearts, err := dbQueryHeart(cfg, daysWindow(1)); err == nil && len(hearts) > 0 {
+
+		hearts, err := dbQueryHeart(cfg, daysWindow(1))
+		if err != nil {
+			return nil, fmt.Errorf("heart: %w", err)
+		}
+		if len(hearts) > 0 {
 			result.AvgHR = hearts[0].AvgHR
 		}
-		if stresses, err := dbQueryStress(cfg, daysWindow(1)); err == nil && len(stresses) > 0 {
+
+		stresses, err := dbQueryStress(cfg, daysWindow(1))
+		if err != nil {
+			return nil, fmt.Errorf("stress: %w", err)
+		}
+		if len(stresses) > 0 {
 			result.StressAvg = stresses[0].AvgScore
 		}
-		if times, err := dbQueryTime(cfg, daysWindow(1)); err == nil && len(times) > 0 {
+
+		times, err := dbQueryTime(cfg, daysWindow(1))
+		if err != nil {
+			return nil, fmt.Errorf("time: %w", err)
+		}
+		if len(times) > 0 {
 			result.TimeCategories = times[0].Categories
 		}
 	} else {
 		result.Source = "csv"
-		if steps, err := parseStepRecords(cfg, daysWindow(1)); err == nil && len(steps) > 0 {
+
+		steps, err := parseStepRecords(cfg, daysWindow(1))
+		if err != nil {
+			return nil, fmt.Errorf("steps: %w", err)
+		}
+		if len(steps) > 0 {
 			result.Steps = steps[0].Steps
 		}
-		if sleeps, err := parseSleepRecords(cfg, daysWindow(2)); err == nil && len(sleeps) > 0 {
+
+		sleeps, err := parseSleepRecords(cfg, daysWindow(2))
+		if err != nil {
+			return nil, fmt.Errorf("sleep: %w", err)
+		}
+		if len(sleeps) > 0 {
 			result.SleepHours = sleeps[0].DurationHours
 		}
-		if hearts, err := parseHeartRecords(cfg, daysWindow(1)); err == nil && len(hearts) > 0 {
+
+		hearts, err := parseHeartRecords(cfg, daysWindow(1))
+		if err != nil {
+			return nil, fmt.Errorf("heart: %w", err)
+		}
+		if len(hearts) > 0 {
 			result.AvgHR = hearts[0].AvgHR
 		}
-		if stresses, err := parseStressRecords(cfg, daysWindow(1)); err == nil && len(stresses) > 0 {
+
+		stresses, err := parseStressRecords(cfg, daysWindow(1))
+		if err != nil {
+			return nil, fmt.Errorf("stress: %w", err)
+		}
+		if len(stresses) > 0 {
 			result.StressAvg = stresses[0].AvgScore
 		}
 	}

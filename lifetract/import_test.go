@@ -10,12 +10,13 @@ func TestExecImport(t *testing.T) {
 	// Use temp dir for the DB
 	tmpDir := t.TempDir()
 	cfg := &Config{
-		DataDir:        tmpDir,
-		ShealthDir:     "testdata/samsunghealth",
-		ShealthDirs:    []string{"testdata/samsunghealth"},
-		ATimeLoggerDB:  "testdata/nonexistent.db3", // will fail gracefully
-		Days:           9999,
-		Exec:           true,
+		DataDir:       tmpDir,
+		ShealthDir:    "testdata/samsunghealth",
+		ShealthDirs:   []string{"testdata/samsunghealth"},
+		ATimeLoggerDB: "testdata/nonexistent.db3", // will fail gracefully
+		Days:          9999,
+		Exec:          true,
+		AllowPartial:  true, // deliberate partial bootstrap: no aTimeLogger fixture
 	}
 
 	result, err := execImport(cfg)
@@ -76,12 +77,12 @@ func TestExecImportIdempotent(t *testing.T) {
 	// Running import twice should not duplicate data
 	tmpDir := t.TempDir()
 	cfg := &Config{
-		DataDir:     tmpDir,
-		ShealthDir:  "testdata/samsunghealth",
-		ShealthDirs: []string{"testdata/samsunghealth"},
+		DataDir:       tmpDir,
+		ShealthDir:    "testdata/samsunghealth",
+		ShealthDirs:   []string{"testdata/samsunghealth"},
 		ATimeLoggerDB: "testdata/nonexistent.db3",
-		Days:        9999,
-		Exec:        true,
+		Days:          9999,
+		Exec:          true,
 	}
 
 	r1, err := execImport(cfg)
