@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -181,8 +182,8 @@ func TestWindowSizeDoesNotChangeThePast(t *testing.T) {
 	// Anchor "today" at 2026-07-13 so the fixture sits a fixed distance back;
 	// daysWindow is relative to now, which is exactly the thing under test.
 	day := func(n int) Window {
-		today := time.Date(2026, 7, 13, 0, 0, 0, 0, KST)
-		return Window{From: today.AddDate(0, 0, -n), To: today.AddDate(0, 0, 1)}
+		tomorrow := time.Date(2026, 7, 14, 0, 0, 0, 0, KST)
+		return Window{From: tomorrow.AddDate(0, 0, -n), To: tomorrow}
 	}
 
 	readOn11 := func(w Window) float64 {
@@ -209,7 +210,7 @@ func TestWindowSizeDoesNotChangeThePast(t *testing.T) {
 	if want != 514 {
 		t.Fatalf("baseline sleep on 2026-07-11: got %v, want 514", want)
 	}
-	for _, n := range []int{2, 3, 4, 5, 10} {
+	for _, n := range []int{3, 4, 5, 6, 10} {
 		if got := readOn11(day(n)); got != want {
 			t.Errorf("--days %d reported %v for 2026-07-11, but --days 5 reported %v; "+
 				"window width must not change a past day", n, got, want)
@@ -224,7 +225,7 @@ func TestWindowSizeDoesNotChangeThePast(t *testing.T) {
 //
 // The boundary must be midnight, on the KST axis, regardless of when we ask.
 func TestDaysWindowSnapsToMidnight(t *testing.T) {
-	for _, days := range []int{0, 1, 2, 7, 365} {
+	for _, days := range []int{1, 2, 7, 365} {
 		w := daysWindow(days)
 
 		for _, b := range []struct {
@@ -242,13 +243,35 @@ func TestDaysWindowSnapsToMidnight(t *testing.T) {
 			}
 		}
 
-		// The window must reach back exactly `days` days and cover all of today.
-		today := startOfDay(nowKST())
-		if !w.From.Equal(today.AddDate(0, 0, -days)) {
-			t.Errorf("daysWindow(%d).From = %s, want %s", days, w.From, today.AddDate(0, 0, -days))
+		// The window is exactly `days` calendar days and includes all of today.
+		tomorrow := startOfDay(nowKST()).AddDate(0, 0, 1)
+		wantFrom := tomorrow.AddDate(0, 0, -days)
+		if !w.From.Equal(wantFrom) {
+			t.Errorf("daysWindow(%d).From = %s, want %s", days, w.From, wantFrom)
 		}
-		if !w.To.Equal(today.AddDate(0, 0, 1)) {
-			t.Errorf("daysWindow(%d).To = %s, want tomorrow's midnight %s", days, w.To, today.AddDate(0, 0, 1))
+		if !w.To.Equal(tomorrow) {
+			t.Errorf("daysWindow(%d).To = %s, want tomorrow's midnight %s", days, w.To, tomorrow)
+		}
+	}
+}
+
+// Plain --days and --days with an explicit upper bound have one width contract.
+// The old split made --days 7 mean eight days while --days 7 --to T meant seven.
+func TestPlainDaysMatchesImplicitTomorrowBound(t *testing.T) {
+	for _, days := range []int{1, 3, 7, 30} {
+		plain := (&Config{Days: days}).queryWindow()
+		tomorrow := startOfDay(nowKST()).AddDate(0, 0, 1)
+		explicit, err := flagRange(map[string]string{
+			"days": strconv.Itoa(days),
+			"to":   tomorrow.Format("2006-01-02"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !plain.From.Equal(explicit.From) || !plain.To.Equal(explicit.To) {
+			t.Errorf("--days %d = [%s,%s), with --to = [%s,%s)", days,
+				plain.From.Format("2006-01-02"), plain.To.Format("2006-01-02"),
+				explicit.From.Format("2006-01-02"), explicit.To.Format("2006-01-02"))
 		}
 	}
 }

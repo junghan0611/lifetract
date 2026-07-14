@@ -39,15 +39,18 @@ type Window struct {
 	To   time.Time
 }
 
-// daysWindow covers the last N days plus today: [midnight N days ago, tomorrow).
+// daysWindow covers exactly N calendar days including today: [tomorrow-N, tomorrow).
+// Thus --days 1 is today, and --days 7 is today plus the previous six days.
+// This is the same width contract as --days N --to T: plain --days simply has
+// tomorrow as its implicit exclusive upper bound.
 //
 // The boundaries are midnights, not "this instant N days ago". That distinction
 // is load-bearing: a mid-day cutoff silently truncates the oldest day in the
 // window, so widening the window would change what the CLI reports as fact
 // about a day already past.
 func daysWindow(days int) Window {
-	today := startOfDay(nowKST())
-	return Window{From: today.AddDate(0, 0, -days), To: today.AddDate(0, 0, 1)}
+	to := startOfDay(nowKST()).AddDate(0, 0, 1)
+	return Window{From: to.AddDate(0, 0, -days), To: to}
 }
 
 // dayWindow covers exactly the one day that t falls in.

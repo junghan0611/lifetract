@@ -41,7 +41,7 @@ Flags:
   --category CAT         Filter time category
 
 Windows (every combination means one thing; --days is never ignored):
-  --days N               [today-N, tomorrow)   the last N days, and today
+  --days N               [tomorrow-N, tomorrow) exactly N days including today
   --days N --to T        [T-N, T)              N days ending at T
   --days N --from F      [F, F+N)              N days starting at F
   --from F --to T        [F, T)

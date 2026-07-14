@@ -39,7 +39,7 @@ func (c *Config) queryWindow() Window {
 //
 // Every accepted combination means exactly one thing:
 //
-//	--days N              [today−N, today+1)   (nil here; queryWindow's default)
+//	--days N              [tomorrow−N, tomorrow) (nil here; queryWindow's default)
 //	--days N --to T       [T−N, T)             N days ending at T
 //	--days N --from F     [F, F+N)             N days starting at F
 //	--from F --to T       [F, T)

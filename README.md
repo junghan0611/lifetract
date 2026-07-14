@@ -106,7 +106,7 @@ lifetract <command>               │
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--days N` | 7 | Query period |
+| `--days N` | 7 | Exactly N calendar days including today (`1` = today) |
 | `--data-dir DIR` | `~/repos/gh/self-tracking-data` | Data root |
 | `--shealth-dir DIR` | Auto-detect latest | Samsung Health directory |
 | `--summary` | false | Summary mode |

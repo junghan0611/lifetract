@@ -12,10 +12,11 @@
   담은 로컬 커밋을 기준으로 `./run.sh deploy`와 agent-config `setup:build`까지 반영한다.
   **push는 없음.**
 - **닫은 구멍:** `day_time` 문자열/epoch-ms 공용 판독 · `create_time` 폴백 삭제 · 최신
-  `update_time` dedupe · 동률 충돌/미래 날짜 거부 · 날짜 UNIQUE · DB `SUM` 제거.
+  `update_time` dedupe · 동률 충돌/미래 날짜 거부 · 날짜 UNIQUE · DB `SUM` 제거 ·
+  `--days N`을 모든 조합에서 오늘 포함 정확히 N일로 통일.
   검수 중 `rows+rejected` 상시 보존안이 새 reject 증가로 실제 손실을 가릴 수 있음을 잡아,
   **거절은 정상 baseline의 감소를 변명하지 못하는 일회성 gate**로 되돌렸다.
-- **Verify:** 132 top-level tests · vet · race · TZ UTC/KST/NY · 실 DB import 202,479행
+- **Verify:** 133 top-level tests · vet · race · TZ UTC/KST/NY · 실 DB import 202,479행
   (`status=ok`, 전 스트림 delta 0, invalid 0) · steps CSV↔DB **3,381일 전수 일치** ·
   날짜 누락/초과/값 불일치 0 · `day_time_ms=0` 0 · UNIQUE index 확인.
 - **골든:** 2017-03-04=2,278 · 2025-07-16=6,335 · 07-17=7,685 ·
