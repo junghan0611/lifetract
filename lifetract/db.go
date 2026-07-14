@@ -153,10 +153,10 @@ var initSchema = func(db *sql.DB) error {
 		source TEXT NOT NULL,
 		table_name TEXT NOT NULL,
 		rows_imported INTEGER,
-		-- NULL means the run was written by a build with no reject policy, so
-		-- rows_imported still counts the placeholder rows. That distinction is
-		-- load-bearing: it is what limits the reject allowance to the single
-		-- migration run instead of renewing it forever. See classify().
+		-- How many rows the run refused on purpose. NULL means the baseline predates
+		-- refusal accounting and may use this run's refusals to explain that one policy
+		-- migration. Once a run writes a non-NULL count, refusals never excuse a later
+		-- shrink in accepted rows. See classify().
 		rows_rejected INTEGER,
 		source_path TEXT
 	);
@@ -167,7 +167,7 @@ var initSchema = func(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_stress_start ON stress(start_time);
 	CREATE INDEX IF NOT EXISTS idx_exercise_start ON exercise(start_time);
 	CREATE INDEX IF NOT EXISTS idx_sleep_stage_uuid ON sleep_stage(sleep_uuid);
-	CREATE INDEX IF NOT EXISTS idx_steps_date ON steps_daily(date);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_steps_date ON steps_daily(date);
 	CREATE INDEX IF NOT EXISTS idx_atl_start ON atl_interval(start_time);
 	CREATE INDEX IF NOT EXISTS idx_atl_cat ON atl_interval(category_id);
 	CREATE INDEX IF NOT EXISTS idx_atl_deleted ON atl_interval(is_deleted);

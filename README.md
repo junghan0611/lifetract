@@ -4,7 +4,7 @@
 
 > Go · modernc.org/sqlite · Single static binary · JSON output
 
-> **AI Agent Skill**: [pi-skills/lifetract](https://github.com/junghan0611/pi-skills/tree/main/lifetract)
+> **AI Agent Skill**: [agent-config/skills/lifetract](https://github.com/junghan0611/agent-config/tree/main/skills/lifetract)
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
@@ -12,7 +12,7 @@
 
 ## What This Does
 
-Unifies **Samsung Health** CSV exports (8 types) and **aTimeLogger** SQLite (18 categories) into a single SQLite database (`lifetract.db`). AI agents query health and time data via JSON — sleep, heart rate, steps, stress, exercise, weight, HRV, and how you spend your hours.
+Unifies **Samsung Health** CSV exports (7 active streams) and **aTimeLogger** SQLite (18 categories) into a single SQLite database (`lifetract.db`). AI agents query health and time data via JSON — sleep, heart rate, steps, stress, exercise, weight, and how you spend your hours.
 
 Every record carries a [Denote ID](https://protesilaos.com/emacs/denote) (`YYYYMMDDTHHMMSS`), enabling cross-referencing with [denotecli](https://github.com/junghan0611/denotecli) on the same time axis.
 
@@ -67,18 +67,21 @@ lifetract <command>               │
 
 | Table | Source | Rows |
 |-------|--------|------|
-| `sleep` | Samsung Health | 4,638 |
-| `sleep_stage` | Samsung Health | 82,357 |
-| `heart_rate` | Samsung Health | 63,575 |
-| `steps_daily` | Samsung Health | 3,330 |
-| `stress` | Samsung Health | 26,775 |
+| `sleep` | Samsung Health | 4,737 |
+| `sleep_stage` | Samsung Health | 85,103 |
+| `heart_rate` | Samsung Health | 64,541 |
+| `steps_daily` | Samsung Health | 3,381 |
+| `stress` | Samsung Health | 27,598 |
 | `exercise` | Samsung Health | 2,199 |
-| `weight` | Samsung Health | 284 |
-| `hrv` | Samsung Health | 1,058 |
+| `weight` | Samsung Health | 285 |
 | `atl_category` | aTimeLogger | 18 |
-| `atl_interval` | aTimeLogger | 14,331 |
+| `atl_interval` | aTimeLogger | 14,617 |
 
-**Total: 198,547 rows, 36MB** (as of 2026-05-19, Samsung CSV → 2026-05-18)
+**Total: 202,479 rows, ~38MB** (2026-07-14 snapshot; Samsung CSV mostly through 2026-07-13, steps through 2026-07-14)
+
+`steps_daily` is one row per measured day. Samsung's `day_time` names that day;
+`create_time` never substitutes for it. Re-synced revisions are reduced by newest
+`update_time`, and the database enforces a unique date.
 
 ---
 

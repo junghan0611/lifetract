@@ -83,9 +83,10 @@ type importBaseline struct {
 	MaxRunID int            // highest import_id on record
 	Prev     map[string]int // rows at the previous import (zeros included)
 	// PrePolicy marks a stream whose previous count was taken by a build with no
-	// reject filter — so Prev still includes the placeholder rows. Only such a
-	// stream may explain a shrink with this run's rejects, and only once: after
-	// that import the ledger carries a reject count and the allowance is gone.
+	// refusal accounting — so Prev still includes rows this build intentionally
+	// refuses. Only such a stream may explain a shrink with this run's refusals,
+	// and only once: after that import the ledger carries a count and the allowance
+	// is gone.
 	PrePolicy  map[string]bool
 	LastGood   map[string]int    // most recent NON-zero count on record
 	LastGoodAt map[string]string // when that count was recorded
@@ -298,18 +299,21 @@ func (b *importBaseline) prevTotal() int {
 //	run 3:              10 REAL rows vanish          → shrink of 10 ≤ 14, "explained" ✗
 //
 // So the allowance is spent once, on the migration, and never renewed. A ledger
-// entry written before the policy existed (rows_rejected IS NULL) still counts the
-// placeholders, and only against such an entry may this run's rejects account for
-// the drop. Once a run records its rejects, the baseline is accepted-rows-only and
-// any shrink in accepted rows is a loss again — including a shrink that hides
-// under a sudden flood of rejects, because that flood costs accepted rows too.
+// entry written before refusal accounting existed (rows_rejected IS NULL) still
+// counts the refused rows inside Prev, and only against such an entry may this run's
+// refusals account for the drop. Once a run records its refusals, the baseline is
+// accepted-rows-only and any shrink in accepted rows is a loss again — including a
+// shrink that hides under a sudden flood of new refusals.
+//
+// A new refusal policy needs an explicit, verified baseline transition; it must not
+// weaken this rule into a standing arithmetic allowance. The steps dedupe migration
+// was verified against all 3,381 source days before its baseline was installed.
 func (b *importBaseline) classify(name string, rows, rejected int, err error) (status, warning string) {
 	prev, hadPrev := b.Prev[name]
 	good, hadGood := b.LastGood[name]
 
-	// rows + rejected is what the source still offers. Against a pre-policy
-	// baseline — which counted the placeholders as imported — that sum has to
-	// reach the old number, or something real went missing on top of the cleanup.
+	// Against a pre-policy baseline, rows + refused has to reach the old count or
+	// something real went missing on top of the intentional cleanup.
 	explained := hadPrev && b.PrePolicy[name] && rows < prev && rows+rejected >= prev
 
 	switch {

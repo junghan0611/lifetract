@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"strconv"
+	"sort"
 	"time"
 )
 
@@ -315,7 +315,7 @@ type TableResult struct {
 // that goes unnoticed next time.
 func (r *ImportResult) record(base *importBaseline, name, source string, c streamCounts, err error, db *sql.DB, sourcePath string) {
 	r.handled[name] = true
-	offered, rejected := c.offered, c.rejected
+	offered, rejected := c.offered, c.refused()
 	// What the importer handed over is a claim; what the table holds is the fact.
 	// They agree today, and nothing enforced that they must — a constraint, a
 	// duplicate id or a failed write would have left the ledger recording rows the
@@ -365,10 +365,15 @@ func (r *ImportResult) record(base *importBaseline, name, source string, c strea
 	// is gone from the DB either way; the only question is whether the tool admits
 	// it. This does not set the status — a refusal we can account for is not a
 	// failure, and blocking promotion on it would jam the import permanently.
-	if rejected > 0 {
+	if c.rejected > 0 {
 		r.Rejected = append(r.Rejected, fmt.Sprintf(
 			"%s: %s rows rejected — timestamp before %s, a placeholder the export ships for 'unknown' (not a measurement)",
-			name, comma(rejected), sentinelFloor.Format("2006-01-02")))
+			name, comma(c.rejected), sentinelFloor.Format("2006-01-02")))
+	}
+	if c.superseded > 0 {
+		r.Rejected = append(r.Rejected, fmt.Sprintf(
+			"%s: %s rows superseded — the export carries an older revision of a day the source itself revised; the newest update_time is the day",
+			name, comma(c.superseded)))
 	}
 
 	if warning != "" {
@@ -399,7 +404,17 @@ type streamCounts struct {
 	offered  int
 	rejected int
 	invalid  int
+	// superseded rows were refused on purpose, like rejected: the source offered two
+	// revisions of one day and only the later one is that day. Counted apart because
+	// the two say different things to a reader — a placeholder the export ships for
+	// "unknown", versus a day it revised.
+	superseded int
 }
+
+// refused is every row the run turned away on purpose. It may explain a shrink
+// only against a baseline that predates refusal accounting; it is never a standing
+// allowance against an ordinary baseline.
+func (c streamCounts) refused() int { return c.rejected + c.superseded }
 
 // --- writing rows without losing the errors ---
 
@@ -698,79 +713,36 @@ func importStepsDaily(db *sql.DB, cfg *Config) (streamCounts, error) {
 		return c, err
 	}
 
-	in, err := newInserter(db, `INSERT OR IGNORE INTO steps_daily
+	// One day, one number, decided in selectStepDays — the same reduction the CSV
+	// query path runs, so the two surfaces cannot answer the same day differently.
+	days, st := selectStepDays(records)
+	c.invalid = st.invalid
+	c.rejected = st.rejected
+	c.superseded = st.superseded
+
+	in, err := newInserter(db, `INSERT INTO steps_daily
 		(id, date, day_time_ms, count, distance, calorie) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return c, err
 	}
 
-	for _, rec := range records {
-		// source_type=-2 is Samsung Health's merged/deduplicated record
-		// across multiple devices (phone + watch). Other values are per-device
-		// raw counts that would cause double-counting if summed.
-		if rec["source_type"] != "-2" {
-			continue
-		}
+	// Sorted, so the table a run builds does not depend on map order.
+	dates := make([]string, 0, len(days))
+	for date := range days {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
 
-		countStr := rec["count"]
-		if countStr == "" {
-			c.invalid++
-			continue
-		}
-		var n numRow
-		steps := n.int("count", countStr)
-		if n.bad() {
-			c.invalid++
-			continue
-		}
-		if steps <= 0 {
-			continue // a policy filter, not a broken row
-		}
+	for _, date := range dates {
+		d := days[date]
 
-		dayTimeStr := rec["day_time"]
-		var date string
-		var dayTimeMs int64
-
-		if dayTimeStr != "" {
-			ms, err := strconv.ParseInt(dayTimeStr, 10, 64)
-			if err == nil {
-				t := time.Unix(ms/1000, 0)
-				date = dateStr(t)
-				dayTimeMs = ms
-			}
-		}
-		if date == "" {
-			ctStr := rec["create_time"]
-			if ctStr == "" {
-				c.invalid++
-				continue
-			}
-			ct, err := parseShealthTime(ctStr)
-			if err != nil {
-				c.invalid++
-				continue
-			}
-			date = dateStr(ct)
-		}
-		if d, err := time.ParseInLocation("2006-01-02", date, KST); err == nil && isSentinelTime(d) {
-			c.rejected++
-			continue
-		}
-
-		dist := n.float("distance", rec["distance"])
-		cal := n.float("calorie", rec["calorie"])
-		if n.bad() {
-			c.invalid++
-			continue
-		}
-
-		id := denoteDayID(date)
-		uuid := rec["datauuid"]
-		if uuid != "" {
-			id = uuid // use original UUID to avoid dedup issues
-		}
-
-		in.exec(id, date, dayTimeMs, steps, dist, cal)
+		// The id is the day, as the schema always said it was. It was swapped for the
+		// row's uuid "to avoid dedup issues" — but the collisions being dodged were the
+		// symptom of every day being misdated onto create_time, and the swap is what let
+		// 3,019 days pile onto one date without a word. The key is the invariant now:
+		// two rows for a day cannot both land, and selectStepDays makes sure only one
+		// is ever offered.
+		in.exec(denoteDayID(date), date, d.day.UnixMilli(), d.count, d.distance, d.calorie)
 		c.offered++
 	}
 	if _, err := in.done(); err != nil {

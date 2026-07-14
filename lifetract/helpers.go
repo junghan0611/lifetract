@@ -125,6 +125,32 @@ func parseShealthTime(s string) (time.Time, error) {
 	return t, err
 }
 
+// parseDayTime reads Samsung's `day_time` column, the midnight that names the day
+// a daily-aggregate row is *about*. Exports ship it in two shapes: epoch millis in
+// older dumps, a bare wall-clock string ("2026-07-13 00:00:00.000") in current ones.
+// Both are read here so no caller has to guess.
+//
+// Never substitute create_time when this fails. create_time is when the row was
+// written, not the day it measures — in this export it often falls on the previous
+// calendar day for live rows and jumps to the dump date for backfilled ones.
+// Reading it as the day silently misdated every step row we had. An unreadable day_time is a hole,
+// and a hole must be counted, not filled.
+//
+// The column also appears in activity/stand/floors/vitality/pedometer summaries.
+// Any importer added for those reads the day through here.
+func parseDayTime(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, fmt.Errorf("day_time: empty")
+	}
+	if t, err := parseShealthTime(s); err == nil {
+		return t, nil
+	}
+	if ms, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return time.UnixMilli(ms).In(KST), nil
+	}
+	return time.Time{}, fmt.Errorf("day_time: unreadable %q", s)
+}
+
 // dateStr returns "2006-01-02" from a time.
 func dateStr(t time.Time) string {
 	return t.In(KST).Format("2006-01-02")

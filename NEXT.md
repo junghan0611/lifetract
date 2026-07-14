@@ -4,18 +4,24 @@
 
 ---
 
-# NOW — 독립 검수 끝. ship 판정: **GO** (2026-07-14 16:20 KST)
+# NOW — steps 시간축 hardfix 닫힘 (2026-07-14 KST)
 
-- **Stem:** `timeline`은 DB를 직접 읽지 않고 lifetract 출력을 사실로 소비한다. 따라서
-  *읽지 못함(hole)* 이 `[]`/0으로 바뀌는 경로가 하나라도 남으면 배포하지 않는다.
-- **Current:** 코드 ship gate `b75e568` + 본 NEXT 핸드오프 커밋. `origin/main`보다 앞이며
-  **push 없음, 워킹트리 clean.**
-  독립 검수에서 **여섯 자리를 더 찾아 닫았다** — 전임이 leaf/aggregator를 닫는 동안
-  *숫자를 읽는 층*과 *스트림을 세는 층*이 열려 있었다.
-- **Verify (전부 통과):** 122 tests · vet · race · TZ UTC/KST/NY 동일 해시 ·
-  실 export **사본** import 2회 (`status=ok`, 202,485행, **전 스트림 invalid 0**, 승격됨,
-  2회차 delta 전부 0) · `time`/`timeline` smoke. 네 수정은 **되돌려서 실패 확인**했다.
-- **다음 한 걸음:** GLG가 push 판단 → `./run.sh deploy` → 관측소 `collect.py` 연결.
+- **Stem:** 숫자를 읽지 못한 자리가 다른 날짜·0·합계로 둔갑하지 않게 하고, 같은 사실은
+  DB/CSV 어느 표면에서도 같은 값으로 답한다.
+- **Current:** `steps_daily` 날짜축 수리 + 독립 재검수 + 문서/스킬 정합 완료. 본 handoff를
+  담은 로컬 커밋을 기준으로 `./run.sh deploy`와 agent-config `setup:build`까지 반영한다.
+  **push는 없음.**
+- **닫은 구멍:** `day_time` 문자열/epoch-ms 공용 판독 · `create_time` 폴백 삭제 · 최신
+  `update_time` dedupe · 동률 충돌/미래 날짜 거부 · 날짜 UNIQUE · DB `SUM` 제거.
+  검수 중 `rows+rejected` 상시 보존안이 새 reject 증가로 실제 손실을 가릴 수 있음을 잡아,
+  **거절은 정상 baseline의 감소를 변명하지 못하는 일회성 gate**로 되돌렸다.
+- **Verify:** 132 top-level tests · vet · race · TZ UTC/KST/NY · 실 DB import 202,479행
+  (`status=ok`, 전 스트림 delta 0, invalid 0) · steps CSV↔DB **3,381일 전수 일치** ·
+  날짜 누락/초과/값 불일치 0 · `day_time_ms=0` 0 · UNIQUE index 확인.
+- **골든:** 2017-03-04=2,278 · 2025-07-16=6,335 · 07-17=7,685 ·
+  07-20=909 · 2026-07-13=17,715 · 07-14=3,187.
+- **Next:** push 판단만 GLG 몫. 새 기능 전에 `timeline/collect.py` provenance 연결로 복귀.
+- **Do not touch:** HRV는 은퇴 상태 유지. HA `KindHRV`는 별도 라이브 센서라 그대로 둔다.
 
 ## 이번 판에서 닫은 것 (독립 검수 발견)
 

@@ -355,6 +355,114 @@ func loadSleepStages(cfg *Config) map[string]*SleepStages {
 	return result
 }
 
+// stepDay is one day's step total, already keyed to the day it measures.
+type stepDay struct {
+	day      time.Time
+	count    int
+	distance float64
+	calorie  float64
+	update   time.Time // Samsung's update_time — the tiebreak between revisions of a day
+}
+
+// stepDayStats is what selectStepDays could not turn into a day, kept apart so each
+// caller can apply its own policy: the importer counts and carries on, a query refuses
+// to answer at all.
+type stepDayStats struct {
+	superseded int   // an earlier revision of a day that a later one replaced
+	rejected   int   // a known Samsung placeholder date, intentionally refused
+	invalid    int   // in the file and unreadable — the tool failing to read its source
+	firstErr   error // the first such row, for the caller that wants to stop
+}
+
+func (st *stepDayStats) fail(err error) {
+	st.invalid++
+	if st.firstErr == nil {
+		st.firstErr = err
+	}
+}
+
+// selectStepDays reduces step_daily_trend to at most one record per day.
+//
+// Samsung ships the merged record (source_type=-2) more than once for a day when the
+// phone re-syncs; this export has six such days. Five repeat the same count, so any
+// choice agrees. On 2025-07-20 the two disagree — 909 and 463 — and 463 is a snapshot
+// taken at 05:50 that a later revision replaced. So the newest update_time wins.
+// Not create_time: on that very day it runs backwards against update_time and would
+// enshrine the stale half-day as the truth.
+//
+// Both surfaces read the day through here, because they used to decide it separately
+// and disagree: the DB path SUMmed the duplicates (7,685 became 15,370) while the CSV
+// path let whichever row came last in the file win. One day, one number, one place.
+func selectStepDays(records []map[string]string) (map[string]stepDay, stepDayStats) {
+	days := make(map[string]stepDay)
+	var st stepDayStats
+
+	for _, rec := range records {
+		// source_type=-2 is Samsung Health's merged record across devices. Other values
+		// are per-device raw counts that would double-count if summed.
+		if rec["source_type"] != "-2" {
+			continue
+		}
+
+		countStr := rec["count"]
+		if countStr == "" {
+			st.fail(fmt.Errorf("count: missing"))
+			continue
+		}
+
+		// The day a row is about, never the day it was written. See parseDayTime.
+		t, err := parseDayTime(rec["day_time"])
+		if err != nil {
+			st.fail(err)
+			continue
+		}
+		update, err := parseShealthTime(rec["update_time"])
+		if err != nil {
+			st.fail(fmt.Errorf("update_time: unreadable %q", rec["update_time"]))
+			continue
+		}
+
+		var n numRow
+		count := n.int("count", countStr)
+		dist := n.float("distance", rec["distance"])
+		cal := n.float("calorie", rec["calorie"])
+		if n.bad() {
+			st.fail(n.err)
+			continue
+		}
+		if isSentinelTime(t) {
+			st.rejected++
+			continue
+		}
+		// A daily aggregate may name today, but not a day after today. Compare
+		// normalized dates: epoch-millis exports can represent a day at 09:00 KST.
+		if startOfDay(t).After(startOfDay(nowKST())) {
+			st.fail(fmt.Errorf("day_time: future date %s", dateStr(t)))
+			continue
+		}
+		if count <= 0 {
+			continue // a policy filter: the watch logging no steps is not a broken row
+		}
+
+		cand := stepDay{day: t, count: count, distance: dist, calorie: cal, update: update}
+		date := dateStr(t)
+		if prev, seen := days[date]; seen {
+			if prev.update.Equal(cand.update) &&
+				(prev.count != cand.count || prev.distance != cand.distance || prev.calorie != cand.calorie) {
+				st.fail(fmt.Errorf("update_time: conflicting revisions for %s at %s", date, update.Format("2006-01-02 15:04:05.000")))
+				continue
+			}
+			st.superseded++
+			if !cand.update.After(prev.update) {
+				continue // the row already held is the later (or identical) revision
+			}
+		}
+		days[date] = cand
+	}
+
+	return days, st
+}
+
 func parseStepRecords(cfg *Config, w Window) ([]StepRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.step_daily_trend.")
 	if path == "" {
@@ -366,63 +474,17 @@ func parseStepRecords(cfg *Config, w Window) ([]StepRecord, error) {
 		return nil, err
 	}
 
+	days, st := selectStepDays(records)
+	if st.firstErr != nil {
+		return nil, fmt.Errorf("steps: %w", st.firstErr)
+	}
+
 	dailySteps := make(map[string]int)
-
-	for _, rec := range records {
-		// source_type=-2 is Samsung Health's merged/deduplicated record.
-		// Without this filter, per-device counts get summed → double-counting.
-		if rec["source_type"] != "-2" {
+	for date, d := range days {
+		if !w.contains(d.day) {
 			continue
 		}
-
-		countStr := rec["count"]
-		if countStr == "" {
-			continue
-		}
-
-		dayTimeStr := rec["day_time"]
-		if dayTimeStr == "" {
-			ctStr := rec["create_time"]
-			if ctStr == "" {
-				continue
-			}
-			ct, err := parseShealthTime(ctStr)
-			if err != nil {
-				continue
-			}
-			if !w.contains(ct) {
-				continue
-			}
-			var n numRow
-			count := n.int("count", countStr)
-			if n.bad() {
-				return nil, fmt.Errorf("steps: %w", n.err)
-			}
-			if count <= 0 {
-				continue // a policy filter, same as the DB path
-			}
-			dailySteps[dateStr(ct)] = count // merged record, no summing needed
-			continue
-		}
-
-		ms, err := strconv.ParseInt(dayTimeStr, 10, 64)
-		if err != nil {
-			continue
-		}
-		t := time.Unix(ms/1000, 0)
-		if !w.contains(t) {
-			continue
-		}
-
-		var n numRow
-		count := n.int("count", countStr)
-		if n.bad() {
-			return nil, fmt.Errorf("steps: %w", n.err)
-		}
-		if count <= 0 {
-			continue // a policy filter, same as the DB path
-		}
-		dailySteps[dateStr(t)] = count // merged record, no summing needed
+		dailySteps[date] = d.count
 	}
 
 	return stepsMapToSorted(dailySteps), nil

@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// The reject allowance is spent once, on the migration, and never renewed.
+// Rejecting rows is never a licence to lose them.
 //
-// The escape hatch that let the migration promote — "a shrink no larger than what
-// we rejected is fine" — is a standing licence if it survives the migration: the
+// "A shrink no larger than what we rejected is fine" is what let the reject policy
+// land at all — and it is a standing licence if it outlives that one import: the
 // placeholders never leave the export, so `rejected` comes back at the same number
-// every run, and that many real rows can vanish silently every import from then on.
+// every run, and that many real rows can vanish silently from then on.
 //
 //	run 1 (old build):  real rows + 1 placeholder    → ledger counts them all
 //	run 2 (this build): placeholder rejected         → shrink of 1, explained ✓
@@ -20,6 +20,11 @@ import (
 //
 // Run 3 is the whole test. It came from a reviewer, and it was worth more than any
 // of the tests already here: everything was green while a real row was being lost.
+//
+// The one-shot gate grants the allowance only against a baseline predating refusal
+// accounting (rows_rejected IS NULL), never against a normal baseline. A later
+// refusal policy gets a separately verified baseline transition; it does not turn
+// refusals into a permanent budget that real loss can spend.
 func TestRejectAllowanceDoesNotRenew(t *testing.T) {
 	cfg, shealth := lossCfg(t)
 	appendHeartRow(t, shealth, "1970-01-01 00:00:00.000", "hr-epoch", "79.0")
@@ -58,6 +63,20 @@ func TestRejectAllowanceDoesNotRenew(t *testing.T) {
 	}
 	if third.CandidatePath == "" {
 		t.Error("the losing run was promoted — the reject count became a standing allowance")
+	}
+}
+
+// New refused rows cannot pay for accepted rows that vanished. Conserving only
+// rows+refused would miss this: 100 accepted + 14 refused and 90 accepted + 24
+// refused both total 114, even though ten real rows disappeared.
+func TestNewRefusalsCannotHideAcceptedLoss(t *testing.T) {
+	b := &importBaseline{
+		Prev:      map[string]int{"steps_daily": 100},
+		PrePolicy: map[string]bool{"steps_daily": false},
+	}
+	status, _ := b.classify("steps_daily", 90, 24, nil)
+	if status != statusShrunk {
+		t.Fatalf("status = %q, want shrunk — new refusals paid for ten lost accepted rows", status)
 	}
 }
 

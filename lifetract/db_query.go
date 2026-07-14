@@ -157,10 +157,15 @@ func dbQuerySteps(cfg *Config, w Window) ([]StepRecord, error) {
 	defer db.Close()
 
 	from, to := w.dateBounds()
+	// No SUM. A day is one row — the id is the day — and summing was how a day the
+	// export re-synced came back doubled (7,685 read out as 15,370). If two rows for
+	// a day ever existed again, adding them would be the wrong answer anyway: they are
+	// revisions of one count, not two halves of it. selectStepDays picks the day's
+	// revision; this reads it back.
 	rows, err := db.Query(`
-		SELECT date, SUM(count) as total
+		SELECT date, count
 		FROM steps_daily WHERE date >= ? AND date < ?
-		GROUP BY date ORDER BY date DESC`, from, to)
+		ORDER BY date DESC`, from, to)
 	if err != nil {
 		return nil, err
 	}
