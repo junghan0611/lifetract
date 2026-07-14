@@ -46,6 +46,7 @@ func execImport(cfg *Config) (*ImportResult, error) {
 		Status:   statusOK,
 		Tables:   []TableResult{},
 		Warnings: []string{},
+		Rejected: []string{},
 		StartAt:  time.Now(),
 		runID:    base.nextRunID(),
 		runAt:    nowStamp(),
@@ -74,7 +75,7 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	// Samsung Health CSVs
 	importFuncs := []struct {
 		name string
-		fn   func(*sql.DB, *Config) (int, error)
+		fn   func(*sql.DB, *Config) (int, int, error)
 	}{
 		{"sleep", importSleep},
 		{"sleep_stage", importSleepStage},
@@ -87,15 +88,15 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	}
 
 	for _, f := range importFuncs {
-		rows, err := f.fn(db, cfg)
-		result.record(base, f.name, "samsung_health", rows, err, db, cfg.ShealthDir)
+		rows, rejected, err := f.fn(db, cfg)
+		result.record(base, f.name, "samsung_health", rows, rejected, err, db, cfg.ShealthDir)
 	}
 
 	// aTimeLogger. The stream is named for what is counted (intervals), because
 	// the ledger is keyed by that name and a name that drifts is a baseline that
 	// never matches.
-	atlRows, atlErr := importATimeLogger(db, cfg)
-	result.record(base, "atl_interval", "atimelogger", atlRows, atlErr, db, cfg.ATimeLoggerDB)
+	atlRows, atlRejected, atlErr := importATimeLogger(db, cfg)
+	result.record(base, "atl_interval", "atimelogger", atlRows, atlRejected, atlErr, db, cfg.ATimeLoggerDB)
 
 	// VACUUM for compact size
 	db.Exec("VACUUM")
@@ -178,7 +179,13 @@ type ImportResult struct {
 	// run was examined and nothing was lost, an absent key says nothing at all.
 	// (CandidatePath above keeps omitempty on purpose: its absence carries the
 	// meaning "promoted".)
-	Warnings      []string      `json:"warnings"`
+	Warnings []string `json:"warnings"`
+	// Rejected is what the run refused on purpose: rows whose timestamp is a
+	// placeholder, not a measurement. Never omitempty, never nil — a run that
+	// threw rows away and did not say so is the same silence as one that lost
+	// them. It is a separate channel from warnings because a refusal is not a
+	// failure: warnings block promotion, an accounted-for refusal does not.
+	Rejected      []string      `json:"rejected"`
 	Note          string        `json:"note,omitempty"`
 	BaselineAt    string        `json:"baseline_at,omitempty"`
 	Tables        []TableResult `json:"tables"`
@@ -210,15 +217,18 @@ type TableResult struct {
 	Status   string `json:"status"`
 	PrevRows *int   `json:"prev_rows,omitempty"`
 	Delta    *int   `json:"delta,omitempty"`
+	// Rejected rows are not in Rows: the count here is what was refused, so
+	// rows + rejected is what the source offered.
+	Rejected int `json:"rejected,omitempty"`
 }
 
 // record judges one stream against the ledger, files it in the result, and writes
 // it back to the ledger — including a zero. A zero that goes unrecorded is a loss
 // that goes unnoticed next time.
-func (r *ImportResult) record(base *importBaseline, name, source string, rows int, err error, db *sql.DB, sourcePath string) {
-	status, warning := base.classify(name, rows, err)
+func (r *ImportResult) record(base *importBaseline, name, source string, rows, rejected int, err error, db *sql.DB, sourcePath string) {
+	status, warning := base.classify(name, rows, rejected, err)
 
-	t := TableResult{Name: name, Rows: rows, Status: status}
+	t := TableResult{Name: name, Rows: rows, Status: status, Rejected: rejected}
 	if prev, ok := base.Prev[name]; ok {
 		delta := rows - prev
 		t.PrevRows = &prev
@@ -226,6 +236,16 @@ func (r *ImportResult) record(base *importBaseline, name, source string, rows in
 	}
 	r.Tables = append(r.Tables, t)
 	r.TotalRows += rows
+
+	// Said out loud, every run, whether or not anything else went wrong. The row
+	// is gone from the DB either way; the only question is whether the tool admits
+	// it. This does not set the status — a refusal we can account for is not a
+	// failure, and blocking promotion on it would jam the import permanently.
+	if rejected > 0 {
+		r.Rejected = append(r.Rejected, fmt.Sprintf(
+			"%s: %s rows rejected — timestamp before %s, a placeholder the export ships for 'unknown' (not a measurement)",
+			name, comma(rejected), sentinelFloor.Format("2006-01-02")))
+	}
 
 	if warning != "" {
 		r.warn(warning)
@@ -241,15 +261,36 @@ func (r *ImportResult) record(base *importBaseline, name, source string, rows in
 
 // --- Samsung Health importers ---
 
-func importSleep(db *sql.DB, cfg *Config) (int, error) {
+// sentinelFloor is the date below which a timestamp is a placeholder, not a
+// measurement. The Samsung export ships rows stamped 1970-01-01 (epoch zero) and
+// 2000-01-01 where it never actually knew the time. Imported as if real, they
+// become heart-rate days decades before the watch existed: true in the database
+// and false in the world. `heart --to 2001-01-01` dutifully reported them.
+//
+// The floor sits far below the oldest genuine record (2017-03-04) and far above
+// the placeholders, so it can only ever catch placeholders. If a real 2009 record
+// ever appears, this is the one line to move — and it will announce itself,
+// because the row will be reported as rejected rather than vanish.
+//
+// Rejected, not dropped: every run says how many it refused, per stream. A tool
+// that quietly discards rows is the same silence as one that quietly loses them.
+var defaultSentinelFloor = time.Date(2010, 1, 1, 0, 0, 0, 0, KST)
+
+// sentinelFloor is a var only so a test can stand in for the older, unfiltered
+// binary. Production never moves it.
+var sentinelFloor = defaultSentinelFloor
+
+func isSentinelTime(t time.Time) bool { return t.Before(sentinelFloor) }
+
+func importSleep(db *sql.DB, cfg *Config) (int, int, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.sleep.")
 	if path == "" {
-		return 0, fmt.Errorf("csv not found")
+		return 0, 0, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	tx, _ := db.Begin()
@@ -258,7 +299,7 @@ func importSleep(db *sql.DB, cfg *Config) (int, error) {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	defer stmt.Close()
 
-	count := 0
+	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["com.samsung.health.sleep.start_time"]
 		endStr := rec["com.samsung.health.sleep.end_time"]
@@ -272,6 +313,10 @@ func importSleep(db *sql.DB, cfg *Config) (int, error) {
 		}
 		end, err := parseShealthTime(endStr)
 		if err != nil {
+			continue
+		}
+		if isSentinelTime(start) {
+			rejected++
 			continue
 		}
 
@@ -292,18 +337,18 @@ func importSleep(db *sql.DB, cfg *Config) (int, error) {
 		count++
 	}
 	tx.Commit()
-	return count, nil
+	return count, rejected, nil
 }
 
-func importSleepStage(db *sql.DB, cfg *Config) (int, error) {
+func importSleepStage(db *sql.DB, cfg *Config) (int, int, error) {
 	path := cfg.shealthCSV("com.samsung.health.sleep_stage.")
 	if path == "" {
-		return 0, fmt.Errorf("csv not found")
+		return 0, 0, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	tx, _ := db.Begin()
@@ -312,7 +357,7 @@ func importSleepStage(db *sql.DB, cfg *Config) (int, error) {
 		VALUES (?, ?, ?, ?, ?)`)
 	defer stmt.Close()
 
-	count := 0
+	count, rejected := 0, 0
 	for _, rec := range records {
 		uuid := rec["datauuid"]
 		sleepUUID := rec["sleep_id"]
@@ -327,6 +372,10 @@ func importSleepStage(db *sql.DB, cfg *Config) (int, error) {
 		if err != nil {
 			continue
 		}
+		if isSentinelTime(start) {
+			rejected++
+			continue
+		}
 
 		id := uuid
 		if id == "" {
@@ -337,25 +386,25 @@ func importSleepStage(db *sql.DB, cfg *Config) (int, error) {
 		count++
 	}
 	tx.Commit()
-	return count, nil
+	return count, rejected, nil
 }
 
-func importHeartRate(db *sql.DB, cfg *Config) (int, error) {
+func importHeartRate(db *sql.DB, cfg *Config) (int, int, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.tracker.heart_rate.")
 	if path == "" {
-		return 0, fmt.Errorf("csv not found")
+		return 0, 0, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	tx, _ := db.Begin()
 	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO heart_rate (id, start_time, heart_rate) VALUES (?, ?, ?)`)
 	defer stmt.Close()
 
-	count := 0
+	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["com.samsung.health.heart_rate.start_time"]
 		hrStr := rec["com.samsung.health.heart_rate.heart_rate"]
@@ -371,6 +420,10 @@ func importHeartRate(db *sql.DB, cfg *Config) (int, error) {
 		if err != nil {
 			continue
 		}
+		if isSentinelTime(start) {
+			rejected++
+			continue
+		}
 
 		uuid := rec["com.samsung.health.heart_rate.datauuid"]
 		id := uuid
@@ -382,18 +435,18 @@ func importHeartRate(db *sql.DB, cfg *Config) (int, error) {
 		count++
 	}
 	tx.Commit()
-	return count, nil
+	return count, rejected, nil
 }
 
-func importStepsDaily(db *sql.DB, cfg *Config) (int, error) {
+func importStepsDaily(db *sql.DB, cfg *Config) (int, int, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.step_daily_trend.")
 	if path == "" {
-		return 0, fmt.Errorf("csv not found")
+		return 0, 0, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	tx, _ := db.Begin()
@@ -401,7 +454,7 @@ func importStepsDaily(db *sql.DB, cfg *Config) (int, error) {
 		(id, date, day_time_ms, count, distance, calorie) VALUES (?, ?, ?, ?, ?, ?)`)
 	defer stmt.Close()
 
-	count := 0
+	count, rejected := 0, 0
 	for _, rec := range records {
 		// source_type=-2 is Samsung Health's merged/deduplicated record
 		// across multiple devices (phone + watch). Other values are per-device
@@ -442,6 +495,10 @@ func importStepsDaily(db *sql.DB, cfg *Config) (int, error) {
 			}
 			date = dateStr(ct)
 		}
+		if d, err := time.ParseInLocation("2006-01-02", date, KST); err == nil && isSentinelTime(d) {
+			rejected++
+			continue
+		}
 
 		id := denoteDayID(date)
 		uuid := rec["datauuid"]
@@ -455,18 +512,18 @@ func importStepsDaily(db *sql.DB, cfg *Config) (int, error) {
 		count++
 	}
 	tx.Commit()
-	return count, nil
+	return count, rejected, nil
 }
 
-func importStress(db *sql.DB, cfg *Config) (int, error) {
+func importStress(db *sql.DB, cfg *Config) (int, int, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.stress.")
 	if path == "" {
-		return 0, fmt.Errorf("csv not found")
+		return 0, 0, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	tx, _ := db.Begin()
@@ -474,7 +531,7 @@ func importStress(db *sql.DB, cfg *Config) (int, error) {
 		(id, start_time, score, min_score, max_score) VALUES (?, ?, ?, ?, ?)`)
 	defer stmt.Close()
 
-	count := 0
+	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["start_time"]
 		scoreStr := rec["score"]
@@ -482,13 +539,20 @@ func importStress(db *sql.DB, cfg *Config) (int, error) {
 			continue
 		}
 
-		uuid := rec["datauuid"]
-		id := uuid
+		// Parsed for every row, not only the ones missing a uuid: the timestamp
+		// has to be judged before the row lands, and a row with a uuid can carry
+		// a placeholder time just as easily as one without.
+		start, err := parseShealthTime(startStr)
+		if err != nil {
+			continue
+		}
+		if isSentinelTime(start) {
+			rejected++
+			continue
+		}
+
+		id := rec["datauuid"]
 		if id == "" {
-			start, err := parseShealthTime(startStr)
-			if err != nil {
-				continue
-			}
 			id = denoteID(start)
 		}
 
@@ -499,20 +563,20 @@ func importStress(db *sql.DB, cfg *Config) (int, error) {
 		count++
 	}
 	tx.Commit()
-	return count, nil
+	return count, rejected, nil
 }
 
-func importExercise(db *sql.DB, cfg *Config) (int, error) {
+func importExercise(db *sql.DB, cfg *Config) (int, int, error) {
 	// Find exact exercise CSV (not photo/program variants)
 	matches, _ := filepath.Glob(filepath.Join(cfg.ShealthDir, "com.samsung.shealth.exercise.2*.csv"))
 	if len(matches) == 0 {
-		return 0, fmt.Errorf("csv not found")
+		return 0, 0, fmt.Errorf("csv not found")
 	}
 	path := matches[0]
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	tx, _ := db.Begin()
@@ -521,7 +585,7 @@ func importExercise(db *sql.DB, cfg *Config) (int, error) {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	defer stmt.Close()
 
-	count := 0
+	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["com.samsung.health.exercise.start_time"]
 		if startStr == "" {
@@ -530,6 +594,10 @@ func importExercise(db *sql.DB, cfg *Config) (int, error) {
 
 		start, err := parseShealthTime(startStr)
 		if err != nil {
+			continue
+		}
+		if isSentinelTime(start) {
+			rejected++
 			continue
 		}
 
@@ -555,18 +623,18 @@ func importExercise(db *sql.DB, cfg *Config) (int, error) {
 		count++
 	}
 	tx.Commit()
-	return count, nil
+	return count, rejected, nil
 }
 
-func importWeight(db *sql.DB, cfg *Config) (int, error) {
+func importWeight(db *sql.DB, cfg *Config) (int, int, error) {
 	path := cfg.shealthCSV("com.samsung.health.weight.")
 	if path == "" {
-		return 0, fmt.Errorf("csv not found")
+		return 0, 0, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	tx, _ := db.Begin()
@@ -574,7 +642,7 @@ func importWeight(db *sql.DB, cfg *Config) (int, error) {
 		(id, start_time, weight, body_fat, muscle_mass) VALUES (?, ?, ?, ?, ?)`)
 	defer stmt.Close()
 
-	count := 0
+	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["start_time"]
 		if startStr == "" {
@@ -583,6 +651,10 @@ func importWeight(db *sql.DB, cfg *Config) (int, error) {
 
 		start, err := parseShealthTime(startStr)
 		if err != nil {
+			continue
+		}
+		if isSentinelTime(start) {
+			rejected++
 			continue
 		}
 
@@ -599,25 +671,25 @@ func importWeight(db *sql.DB, cfg *Config) (int, error) {
 		count++
 	}
 	tx.Commit()
-	return count, nil
+	return count, rejected, nil
 }
 
-func importHRV(db *sql.DB, cfg *Config) (int, error) {
+func importHRV(db *sql.DB, cfg *Config) (int, int, error) {
 	path := cfg.shealthCSV("com.samsung.health.hrv.")
 	if path == "" {
-		return 0, fmt.Errorf("csv not found")
+		return 0, 0, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	tx, _ := db.Begin()
 	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO hrv (id, start_time, hrv_rmssd) VALUES (?, ?, ?)`)
 	defer stmt.Close()
 
-	count := 0
+	count, rejected := 0, 0
 	for _, rec := range records {
 		// HRV CSV column names vary; try common patterns
 		startStr := firstNonEmpty(rec,
@@ -635,6 +707,10 @@ func importHRV(db *sql.DB, cfg *Config) (int, error) {
 		if err != nil {
 			continue
 		}
+		if isSentinelTime(start) {
+			rejected++
+			continue
+		}
 
 		uuid := firstNonEmpty(rec,
 			"com.samsung.health.hrv.datauuid",
@@ -648,26 +724,26 @@ func importHRV(db *sql.DB, cfg *Config) (int, error) {
 		count++
 	}
 	tx.Commit()
-	return count, nil
+	return count, rejected, nil
 }
 
 // --- aTimeLogger importer ---
 
-func importATimeLogger(db *sql.DB, cfg *Config) (int, error) {
+func importATimeLogger(db *sql.DB, cfg *Config) (int, int, error) {
 	if _, err := os.Stat(cfg.ATimeLoggerDB); err != nil {
-		return 0, fmt.Errorf("atimelogger db not found: %s", cfg.ATimeLoggerDB)
+		return 0, 0, fmt.Errorf("atimelogger db not found: %s", cfg.ATimeLoggerDB)
 	}
 
 	srcDB, err := sql.Open("sqlite", cfg.ATimeLoggerDB)
 	if err != nil {
-		return 0, fmt.Errorf("open atimelogger: %w", err)
+		return 0, 0, fmt.Errorf("open atimelogger: %w", err)
 	}
 	defer srcDB.Close()
 
 	// Import categories
 	rows, err := srcDB.Query(`SELECT id, name, color, is_group, parent_id FROM activity_type`)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer rows.Close()
 
@@ -687,7 +763,7 @@ func importATimeLogger(db *sql.DB, cfg *Config) (int, error) {
 	iRows, err := srcDB.Query(`SELECT id, guid, start, finish, comment, activity_type_id, is_deleted
 		FROM time_interval2`)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer iRows.Close()
 
@@ -695,18 +771,23 @@ func importATimeLogger(db *sql.DB, cfg *Config) (int, error) {
 		(id, guid, start_time, end_time, comment, category_id, is_deleted)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`)
 
-	count := 0
+	count, rejected := 0, 0
 	for iRows.Next() {
 		var id, start, finish, catID, isDeleted int
 		var guid, comment sql.NullString
 		iRows.Scan(&id, &guid, &start, &finish, &comment, &catID, &isDeleted)
+		// aTimeLogger stores unix seconds; a zero start is epoch, not a block.
+		if isSentinelTime(time.Unix(int64(start), 0)) {
+			rejected++
+			continue
+		}
 		intStmt.Exec(id, guid.String, start, finish, comment.String, catID, isDeleted)
 		count++
 	}
 	intStmt.Close()
 	tx.Commit()
 
-	return count, nil
+	return count, rejected, nil
 }
 
 // parseInt, parseFloat, firstNonEmpty → helpers.go

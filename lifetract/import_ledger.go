@@ -234,16 +234,30 @@ func (b *importBaseline) prevTotal() int {
 // not a judgment call, so that is what warns. A partial drop is reported as a
 // number (prev_rows/delta on every stream) and warned about only against the
 // immediately previous import, where it is an event rather than an opinion.
-func (b *importBaseline) classify(name string, rows int, err error) (status, warning string) {
+// classify judges one stream. rejected is how many rows this run refused on
+// purpose (placeholder timestamps), and it is the difference between a stream
+// that lost data and one the tool deliberately cleaned.
+//
+// Without it the first import after the sentinel filter lands would see
+// heart_rate go 64,555 → 64,541, call it shrunk, and refuse to promote — forever,
+// since the count can never climb back. The guard would have jammed the door it
+// was built to watch. So a shrink is a loss *unless the run can account for every
+// missing row itself*.
+func (b *importBaseline) classify(name string, rows, rejected int, err error) (status, warning string) {
 	prev, hadPrev := b.Prev[name]
 	good, hadGood := b.LastGood[name]
+
+	// A drop no larger than what we refused is explained by the refusal. A drop
+	// beyond it is a real loss and still says so — the rejects do not become a
+	// blanket that hides one.
+	explained := hadPrev && rows < prev && prev-rows <= rejected
 
 	switch {
 	case err != nil:
 		status = err.Error()
 	case rows == 0:
 		status = statusEmpty
-	case hadPrev && rows < prev:
+	case hadPrev && rows < prev && !explained:
 		status = statusShrunk
 	default:
 		status = statusOK
@@ -265,8 +279,13 @@ func (b *importBaseline) classify(name string, rows int, err error) (status, war
 		return status, fmt.Sprintf("%s: source unreadable — %v", name, err)
 	}
 	if status == statusShrunk {
-		return status, fmt.Sprintf("%s: %s → %s rows (%s) — fewer than the last import",
+		msg := fmt.Sprintf("%s: %s → %s rows (%s) — fewer than the last import",
 			name, comma(prev), comma(rows), signed(rows-prev))
+		if rejected > 0 {
+			msg += fmt.Sprintf("; only %s of those are the placeholders this run rejected — the rest is unaccounted for",
+				comma(rejected))
+		}
+		return status, msg
 	}
 	return status, ""
 }
