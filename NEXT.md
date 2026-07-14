@@ -4,10 +4,22 @@
 
 ---
 
-## ⏸ 커밋 대기 — 시간 계약 (2026-07-14, uncommitted)
+## ✅ 닫힘 — 시간 계약 (2026-07-14, 푸시·배포 완료)
 
-timeline 관측소(`junghan0611/timeline`)가 첫 *소비자* 로 붙으면서 시간축 구멍 4개가
-드러났다. 워킹트리에 수정 완료, **커밋/푸시/배포는 GLG 판단 대기**.
+timeline 관측소(`junghan0611/timeline`)가 첫 *소비자* 로 붙으면서 시간축 구멍이
+드러났다. **커밋·푸시·배포 전부 완료** (`cd08b18` · `b636b6f` · `3157ff7`).
+공유 바이너리 두 자리(`~/.claude/skills/lifetract/`, `agent-config`) 갱신됨.
+
+- [x] **Samsung export 폴더를 하나로** (`samsunghealth_gtgkjh/`) — export 는 언제나
+      전체 이력 누적 덤프라 세대별 폴더를 쌓을 이유가 없다. 옛 폴더 삭제 후 import
+      가 **203,539 행으로 동일**함을 확인 (잃는 것 없음).
+- [x] **`newestCSV()`** — 합치면서 함정 2개가 드러났다. (a) 한 폴더에 두 세대가 있으면
+      glob 순서상 **옛 CSV 가 먼저** 잡힌다. (b) pattern 은 접두사라
+      `stress.` 가 `stress.histogram`(1KB) 도 잡는다 — `matches[len-1]` 로 고쳤더니
+      **stress 27,598 행이 통째로 0** 이 됐고 import 는 "ok" 라고 했다.
+      `<pattern><숫자>.csv` 만 고른다. 둘 다 회귀 테스트.
+- [x] **`run.sh update`** — Syncthing zip(`~/sync/family/lifedata`) → 고정 폴더 통째
+      교체. 교체 전에 지우므로 두 세대가 안 섞인다.
 
 - [x] **SQL `localtime` → `'+9 hours'`** — 셸 `$TZ` 가 날짜 귀속을 바꾸던 자리.
       코드베이스 유일한 `localtime` 이었고, 시연된 버그 전부가 여기서 나왔다.
