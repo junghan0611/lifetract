@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -139,9 +138,18 @@ func initSchema(db *sql.DB) error {
 		FOREIGN KEY(category_id) REFERENCES atl_category(id)
 	);
 
-	-- Import metadata
+	-- Import metadata — the ledger every import answers to (import_ledger.go).
+	--
+	-- import_id groups one run. imported_at cannot do that job: it used to be
+	-- time.Now() per row, so a single import split across the second boundary and
+	-- landed as two or three timestamps (2026-07-14: two imports, five stamps).
+	-- Anyone reconstructing "the previous import" with GROUP BY imported_at would
+	-- have compared against half a run — a wrong baseline, quietly. Group by
+	-- import_id. imported_at is now constant within a run, but import_id is what
+	-- says so.
 	CREATE TABLE IF NOT EXISTS import_log (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		import_id INTEGER NOT NULL,
 		imported_at TEXT NOT NULL,
 		source TEXT NOT NULL,
 		table_name TEXT NOT NULL,
@@ -164,11 +172,13 @@ func initSchema(db *sql.DB) error {
 	return err
 }
 
-// logImport records an import operation.
-func logImport(db *sql.DB, source, tableName string, rows int, sourcePath string) {
-	db.Exec(`INSERT INTO import_log (imported_at, source, table_name, rows_imported, source_path)
-		VALUES (?, ?, ?, ?, ?)`,
-		time.Now().Format(time.RFC3339), source, tableName, rows, sourcePath)
+// logImport records one stream of one import run. The run's id and timestamp are
+// fixed by the caller before the run starts — a stamp taken here, per row, is a
+// stamp that disagrees with itself when the clock ticks mid-import.
+func logImport(db *sql.DB, runID int, at, source, tableName string, rows int, sourcePath string) {
+	db.Exec(`INSERT INTO import_log (import_id, imported_at, source, table_name, rows_imported, source_path)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		runID, at, source, tableName, rows, sourcePath)
 }
 
 // dbExists checks if the lifetract.db exists.

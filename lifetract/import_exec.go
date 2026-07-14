@@ -13,6 +13,10 @@ import (
 func execImport(cfg *Config) (*ImportResult, error) {
 	path := dbPath(cfg)
 
+	// What the streams were worth last time. Read BEFORE the DB is removed —
+	// the ledger lives inside the file we are about to delete (import_ledger.go).
+	base := readBaseline(path)
+
 	// Remove old DB if exists (fresh import)
 	os.Remove(path)
 
@@ -25,11 +29,32 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	if err := initSchema(db); err != nil {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	carryForward(db, base)
 
+	// One stamp, one id, for the whole run. Taken here, once — a clock read per
+	// row is a clock that ticks mid-import and splits one run into two.
 	result := &ImportResult{
 		DBPath:  path,
+		Status:  statusOK,
 		Tables:  []TableResult{},
 		StartAt: time.Now(),
+		runID:   base.nextRunID(),
+		runAt:   nowStamp(),
+	}
+	result.ImportID = result.runID
+	switch {
+	case base.Exists:
+		result.BaselineAt = base.At
+		result.PrevTotalRows = base.prevTotal()
+	case base.ReadErr != "":
+		// The ledger was there and we could not read it. That is not a first
+		// import, and calling it one would silently disarm the loss check for
+		// this run — the exact silence the check exists to break.
+		result.Status = statusWarn
+		result.Warnings = append(result.Warnings,
+			"ledger unreadable — no loss check this run: "+base.ReadErr)
+	default:
+		result.Note = "first import — no baseline to compare against"
 	}
 
 	// Samsung Health CSVs
@@ -49,36 +74,14 @@ func execImport(cfg *Config) (*ImportResult, error) {
 
 	for _, f := range importFuncs {
 		rows, err := f.fn(db, cfg)
-		status := "ok"
-		if err != nil {
-			status = err.Error()
-		}
-		result.Tables = append(result.Tables, TableResult{
-			Name:   f.name,
-			Rows:   rows,
-			Status: status,
-		})
-		result.TotalRows += rows
-		if rows > 0 {
-			logImport(db, "samsung_health", f.name, rows, cfg.ShealthDir)
-		}
+		result.record(base, f.name, "samsung_health", rows, err, db, cfg.ShealthDir)
 	}
 
-	// aTimeLogger
-	atlRows, err := importATimeLogger(db, cfg)
-	status := "ok"
-	if err != nil {
-		status = err.Error()
-	}
-	result.Tables = append(result.Tables, TableResult{
-		Name:   "atl_category+atl_interval",
-		Rows:   atlRows,
-		Status: status,
-	})
-	result.TotalRows += atlRows
-	if atlRows > 0 {
-		logImport(db, "atimelogger", "atl_interval", atlRows, cfg.ATimeLoggerDB)
-	}
+	// aTimeLogger. The stream is named for what is counted (intervals), because
+	// the ledger is keyed by that name and a name that drifts is a baseline that
+	// never matches.
+	atlRows, atlErr := importATimeLogger(db, cfg)
+	result.record(base, "atl_interval", "atimelogger", atlRows, atlErr, db, cfg.ATimeLoggerDB)
 
 	// VACUUM for compact size
 	db.Exec("VACUUM")
@@ -92,19 +95,60 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	return result, nil
 }
 
+// ImportResult leads with the verdict. A caller that reads one field reads
+// status, so status must be the field that knows about the loss — not total_rows,
+// which is happy to be smaller, and not the per-table "ok" that used to mean
+// nothing worse than "we opened a file".
 type ImportResult struct {
-	DBPath    string        `json:"db_path"`
-	Tables    []TableResult `json:"tables"`
-	TotalRows int           `json:"total_rows"`
-	DBSizeMB  float64       `json:"db_size_mb"`
-	Duration  string        `json:"duration"`
-	StartAt   time.Time     `json:"-"`
+	DBPath        string        `json:"db_path"`
+	Status        string        `json:"status"` // "ok" | "warning"
+	Warnings      []string      `json:"warnings,omitempty"`
+	Note          string        `json:"note,omitempty"`
+	BaselineAt    string        `json:"baseline_at,omitempty"`
+	Tables        []TableResult `json:"tables"`
+	TotalRows     int           `json:"total_rows"`
+	PrevTotalRows int           `json:"prev_total_rows,omitempty"`
+	ImportID      int           `json:"import_id"` // this run's ledger id
+	DBSizeMB      float64       `json:"db_size_mb"`
+	Duration      string        `json:"duration"`
+	StartAt       time.Time     `json:"-"`
+
+	runID int
+	runAt string
 }
 
+// TableResult carries the previous count next to the new one. prev_rows/delta are
+// pointers so that "no baseline for this stream" and "unchanged" cannot be
+// confused: absent means nothing to compare, 0 means nothing changed.
 type TableResult struct {
-	Name   string `json:"name"`
-	Rows   int    `json:"rows"`
-	Status string `json:"status"`
+	Name     string `json:"name"`
+	Rows     int    `json:"rows"`
+	Status   string `json:"status"`
+	PrevRows *int   `json:"prev_rows,omitempty"`
+	Delta    *int   `json:"delta,omitempty"`
+}
+
+// record judges one stream against the ledger, files it in the result, and writes
+// it back to the ledger — including a zero. A zero that goes unrecorded is a loss
+// that goes unnoticed next time.
+func (r *ImportResult) record(base *importBaseline, name, source string, rows int, err error, db *sql.DB, sourcePath string) {
+	status, warning := base.classify(name, rows, err)
+
+	t := TableResult{Name: name, Rows: rows, Status: status}
+	if prev, ok := base.Prev[name]; ok {
+		delta := rows - prev
+		t.PrevRows = &prev
+		t.Delta = &delta
+	}
+	r.Tables = append(r.Tables, t)
+	r.TotalRows += rows
+
+	if warning != "" {
+		r.Warnings = append(r.Warnings, warning)
+		r.Status = statusWarn
+	}
+
+	logImport(db, r.runID, r.runAt, source, name, rows, sourcePath)
 }
 
 // --- Samsung Health importers ---
