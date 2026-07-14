@@ -113,13 +113,8 @@ var initSchema = func(db *sql.DB) error {
 		source TEXT DEFAULT 'samsung_health'
 	);
 
-	-- Samsung Health: HRV
-	CREATE TABLE IF NOT EXISTS hrv (
-		id TEXT PRIMARY KEY,
-		start_time TEXT NOT NULL,
-		hrv_rmssd REAL,
-		source TEXT DEFAULT 'samsung_health'
-	);
+	-- (no hrv table: the export carries no rmssd column, so this tool has never had
+	-- the measurement. See retiredStreams in import_ledger.go.)
 
 	-- aTimeLogger: categories (original, no remapping)
 	CREATE TABLE IF NOT EXISTS atl_category (

@@ -16,6 +16,28 @@ func testConfig(days int) *Config {
 	}
 }
 
+// testConfigDB is the operational shape: both sources present, imported into a real
+// DB.
+//
+// today, timeline and read fold the aTimeLogger axis into a single answer, and that
+// axis has no CSV source. They used to be exercised on the CSV fixture above, which
+// is precisely the run where the axis cannot be read — and they passed, because the
+// missing hours came back as no hours at all. They refuse that now
+// (TestCSVModeNeverZeroesTheTimeAxis), so the commands that assemble a day are
+// tested where a day can actually be assembled.
+func testConfigDB(t *testing.T, days int) *Config {
+	t.Helper()
+	cfg, _ := lossCfg(t)
+	if r, err := execImport(cfg); err != nil {
+		t.Fatal(err)
+	} else if r.Status != statusOK {
+		t.Fatalf("fixture import was not sound: %v", r.Warnings)
+	}
+	cfg.Days = days
+	cfg.Exec = false
+	return cfg
+}
+
 // --- SKILL.md: status ---
 
 func TestCmdStatus(t *testing.T) {
@@ -318,7 +340,7 @@ func TestCmdExercise(t *testing.T) {
 // --- SKILL.md: today ---
 
 func TestCmdToday(t *testing.T) {
-	cfg := testConfig(9999)
+	cfg := testConfigDB(t, 9999)
 	result, err := cmdToday(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -346,7 +368,7 @@ func TestCmdToday(t *testing.T) {
 // --- SKILL.md: timeline ---
 
 func TestCmdTimeline(t *testing.T) {
-	cfg := testConfig(9999)
+	cfg := testConfigDB(t, 9999)
 	result, err := cmdTimeline(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +426,7 @@ func TestCmdTimeline(t *testing.T) {
 // --- SKILL.md: read (by Denote ID) ---
 
 func TestCmdReadDayID(t *testing.T) {
-	cfg := testConfig(9999)
+	cfg := testConfigDB(t, 9999)
 	cfg.ReadID = "20250115T000000"
 	result, err := cmdRead(cfg)
 	if err != nil {
@@ -428,7 +450,7 @@ func TestCmdReadDayID(t *testing.T) {
 }
 
 func TestCmdReadDateShorthand(t *testing.T) {
-	cfg := testConfig(9999)
+	cfg := testConfigDB(t, 9999)
 	cfg.ReadID = "2025-01-15"
 	result, err := cmdRead(cfg)
 	if err != nil {
@@ -511,10 +533,13 @@ func TestEmptyWindowMarshalsAsEmptyList(t *testing.T) {
 		"timeline": cmdTimeline,
 	}
 
+	base := testConfigDB(t, 1)
+
 	for name, fn := range cmds {
 		t.Run(name, func(t *testing.T) {
-			// testdata is fixed in the past, so a 1-day window holds nothing.
-			result, err := fn(testConfig(1))
+			// the fixtures are fixed in the past, so a 1-day window holds nothing.
+			cfg := *base
+			result, err := fn(&cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

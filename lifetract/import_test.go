@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -99,39 +100,59 @@ func TestExecImportIdempotent(t *testing.T) {
 	}
 }
 
-func TestParseIntFloat(t *testing.T) {
+func TestNumRowInt(t *testing.T) {
 	tests := []struct {
-		input string
-		want  int
+		input   string
+		want    int
+		wantBad bool
 	}{
-		{"85", 85},
-		{"85.0", 85},
-		{"0", 0},
-		{"", 0},
-		{"  42  ", 42},
+		{"85", 85, false},
+		{"85.0", 85, false}, // the export writes integers as floats
+		{"0", 0, false},
+		{"", 0, false}, // absent is a value the export does not have
+		{"  42  ", 42, false},
+		{"garbage", 0, true}, // present and unreadable: the file changed shape
 	}
 	for _, tt := range tests {
-		got := parseInt(tt.input)
-		if got != tt.want {
-			t.Errorf("parseInt(%q) = %d, want %d", tt.input, got, tt.want)
+		var n numRow
+		got := n.int("f", tt.input)
+		if got != tt.want || n.bad() != tt.wantBad {
+			t.Errorf("int(%q) = %d, bad=%v; want %d, bad=%v", tt.input, got, n.bad(), tt.want, tt.wantBad)
 		}
 	}
 }
 
-func TestParseFloat(t *testing.T) {
+func TestNumRowFloat(t *testing.T) {
 	tests := []struct {
-		input string
-		want  float64
+		input   string
+		want    float64
+		wantBad bool
 	}{
-		{"72.5", 72.5},
-		{"0", 0},
-		{"", 0},
+		{"72.5", 72.5, false},
+		{"0", 0, false},
+		{"", 0, false},
+		{"garbage", 0, true},
 	}
 	for _, tt := range tests {
-		got := parseFloat(tt.input)
-		if got != tt.want {
-			t.Errorf("parseFloat(%q) = %f, want %f", tt.input, got, tt.want)
+		var n numRow
+		got := n.float("f", tt.input)
+		if got != tt.want || n.bad() != tt.wantBad {
+			t.Errorf("float(%q) = %f, bad=%v; want %f, bad=%v", tt.input, got, n.bad(), tt.want, tt.wantBad)
 		}
+	}
+}
+
+// One bad field poisons the row, and the row keeps the FIRST complaint — so the
+// message names the field that actually broke, not the last one read after it.
+func TestNumRowRemembersTheFirstBadField(t *testing.T) {
+	var n numRow
+	n.float("score", "garbage")
+	n.float("min", "also-garbage")
+	if !n.bad() {
+		t.Fatal("row with two unreadable fields reported clean")
+	}
+	if !strings.Contains(n.err.Error(), "score") {
+		t.Errorf("error names %v, want the first bad field (score)", n.err)
 	}
 }
 

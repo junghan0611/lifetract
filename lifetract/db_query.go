@@ -42,8 +42,17 @@ func dbQuerySleep(cfg *Config, w Window) ([]SleepRecord, error) {
 			return nil, fmt.Errorf("read row: %w", err)
 		}
 
-		start, _ := parseShealthTime(startStr)
-		end, _ := parseShealthTime(endStr)
+		// A stored time we cannot read is not a night that did not happen. Folded to
+		// the zero time it made end-start negative, and the `continue` below — meant
+		// for genuinely impossible durations — dropped the night without a word.
+		start, err := parseShealthTime(startStr)
+		if err != nil {
+			return nil, fmt.Errorf("sleep %s: start_time %q: %w", id, startStr, err)
+		}
+		end, err := parseShealthTime(endStr)
+		if err != nil {
+			return nil, fmt.Errorf("sleep %s: end_time %q: %w", id, endStr, err)
+		}
 		durH := end.Sub(start).Hours()
 		if durH <= 0 || durH > 24 {
 			continue
@@ -98,8 +107,16 @@ func dbLoadSleepStages(db *sql.DB) (map[string]*SleepStages, error) {
 			return nil, fmt.Errorf("read row: %w", err)
 		}
 
-		start, _ := parseShealthTime(startStr)
-		end, _ := parseShealthTime(endStr)
+		// Measured against the zero time, a stage's minutes are not short — they are
+		// astronomical, and they were being added to the night's totals.
+		start, err := parseShealthTime(startStr)
+		if err != nil {
+			return nil, fmt.Errorf("sleep_stage of %s: start_time %q: %w", uuid, startStr, err)
+		}
+		end, err := parseShealthTime(endStr)
+		if err != nil {
+			return nil, fmt.Errorf("sleep_stage of %s: end_time %q: %w", uuid, endStr, err)
+		}
 		dur := end.Sub(start).Minutes()
 
 		s, ok := result[uuid]
@@ -281,7 +298,13 @@ func dbQueryExercise(cfg *Config, w Window) ([]ExerciseRecord, error) {
 			return nil, fmt.Errorf("read row: %w", err)
 		}
 
-		start, _ := parseShealthTime(startStr)
+		// The one that does not skip. exercise takes its duration from another column,
+		// so a start_time we could not read passed every guard and went out as a
+		// record dated 0001-01-01 — the tool asserting a date it never read.
+		start, err := parseShealthTime(startStr)
+		if err != nil {
+			return nil, fmt.Errorf("exercise %s: start_time %q: %w", id, startStr, err)
+		}
 		durMin := float64(durMs.Int64) / 60000.0
 		if durMin <= 0 {
 			continue
@@ -556,8 +579,14 @@ func dbQueryEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
 		return nil, fmt.Errorf("sleep: %w", err)
 	}
 	if err == nil {
-		start, _ := parseShealthTime(startStr)
-		end, _ := parseShealthTime(endStr)
+		start, perr := parseShealthTime(startStr)
+		if perr != nil {
+			return nil, fmt.Errorf("sleep %s: start_time %q: %w", id, startStr, perr)
+		}
+		end, perr := parseShealthTime(endStr)
+		if perr != nil {
+			return nil, fmt.Errorf("sleep %s: end_time %q: %w", id, endStr, perr)
+		}
 		sr := SleepRecord{
 			ID:            denoteID(start),
 			Date:          dateStr(start),
@@ -592,7 +621,10 @@ func dbQueryEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
 		return nil, fmt.Errorf("exercise: %w", err)
 	}
 	if err == nil {
-		start, _ := parseShealthTime(eStartStr)
+		start, perr := parseShealthTime(eStartStr)
+		if perr != nil {
+			return nil, fmt.Errorf("exercise %s: start_time %q: %w", id, eStartStr, perr)
+		}
 		durMin := float64(eDurMs.Int64) / 60000.0
 		typeCode := ""
 		if exType.Valid {

@@ -282,6 +282,13 @@ func cmdToday(cfg *Config) (interface{}, error) {
 	} else {
 		result.Source = "csv"
 
+		// Asked first, because it is the one that cannot be answered: today folds in
+		// the time axis, and in CSV mode there is no aTimeLogger to fold. Leaving it
+		// out — which is what this branch did — reports a day with no tracked hours.
+		if _, err := parseTimeRecords(cfg, daysWindow(1)); err != nil {
+			return nil, fmt.Errorf("time: %w", err)
+		}
+
 		steps, err := parseStepRecords(cfg, daysWindow(1))
 		if err != nil {
 			return nil, fmt.Errorf("steps: %w", err)

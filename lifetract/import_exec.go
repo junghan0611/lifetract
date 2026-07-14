@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -50,6 +49,7 @@ func execImport(cfg *Config) (*ImportResult, error) {
 		StartAt:  time.Now(),
 		runID:    base.nextRunID(),
 		runAt:    nowStamp(),
+		handled:  map[string]bool{},
 	}
 	result.ImportID = result.runID
 	switch {
@@ -84,7 +84,6 @@ func execImport(cfg *Config) (*ImportResult, error) {
 		{"stress", importStress},
 		{"exercise", importExercise},
 		{"weight", importWeight},
-		{"hrv", importHRV},
 	}
 
 	for _, f := range importFuncs {
@@ -113,6 +112,21 @@ func execImport(cfg *Config) (*ImportResult, error) {
 			result.warn(fmt.Sprintf(
 				"atl_interval: %s blocks point at a category this import does not have — "+
 					"they are in the table and will appear in no time query", comma(orphans)))
+		}
+	}
+
+	// A stream the ledger knows and this run never touched must not simply stop
+	// appearing. Deleting an importer would otherwise be the quietest loss available
+	// — no error, no empty count, no shrink, just a name that is gone — and this
+	// whole file exists because of losses that looked like nothing at all.
+	//
+	// Retiring a stream on purpose goes through retiredStreams, which drops it from
+	// the baseline entirely. So anything reported here went missing by accident.
+	for name := range base.Prev {
+		if !result.handled[name] {
+			result.warn(fmt.Sprintf(
+				"%s: the last import recorded this stream and this run never touched it — "+
+					"it would have vanished from the ledger without a word", name))
 		}
 	}
 
@@ -266,6 +280,9 @@ type ImportResult struct {
 
 	runID int
 	runAt string
+	// streams this run actually judged — anything in the baseline that is missing
+	// from here went away without being noticed.
+	handled map[string]bool
 }
 
 // warn records a problem and makes the verdict say so. Every path that notices
@@ -297,6 +314,7 @@ type TableResult struct {
 // it back to the ledger — including a zero. A zero that goes unrecorded is a loss
 // that goes unnoticed next time.
 func (r *ImportResult) record(base *importBaseline, name, source string, c streamCounts, err error, db *sql.DB, sourcePath string) {
+	r.handled[name] = true
 	offered, rejected := c.offered, c.rejected
 	// What the importer handed over is a claim; what the table holds is the fact.
 	// They agree today, and nothing enforced that they must — a constraint, a
@@ -523,20 +541,20 @@ func importSleep(db *sql.DB, cfg *Config) (streamCounts, error) {
 			continue
 		}
 
+		var n numRow
+		score := n.int("sleep_score", rec["sleep_score"])
+		eff := n.float("efficiency", rec["efficiency"])
+		light := n.float("total_light_duration", rec["total_light_duration"])
+		rem := n.float("total_rem_duration", rec["total_rem_duration"])
+		if n.bad() {
+			c.invalid++
+			continue
+		}
+
 		dur := end.Sub(start).Minutes()
 		uuid := rec["com.samsung.health.sleep.datauuid"]
 
-		in.exec(
-			denoteID(start),
-			uuid,
-			startStr,
-			endStr,
-			dur,
-			parseInt(rec["sleep_score"]),
-			parseFloat(rec["efficiency"]),
-			parseFloat(rec["total_light_duration"]),
-			parseFloat(rec["total_rem_duration"]),
-		)
+		in.exec(denoteID(start), uuid, startStr, endStr, dur, score, eff, light, rem)
 		c.offered++
 	}
 	if _, err := in.done(); err != nil {
@@ -585,12 +603,19 @@ func importSleepStage(db *sql.DB, cfg *Config) (streamCounts, error) {
 			continue
 		}
 
+		var n numRow
+		stage := n.int("stage", stageStr)
+		if n.bad() {
+			c.invalid++
+			continue
+		}
+
 		id := uuid
 		if id == "" {
 			id = denoteID(start) + "_" + stageStr
 		}
 
-		in.exec(id, sleepUUID, startStr, endStr, parseInt(stageStr))
+		in.exec(id, sleepUUID, startStr, endStr, stage)
 		c.offered++
 	}
 	if _, err := in.done(); err != nil {
@@ -623,7 +648,15 @@ func importHeartRate(db *sql.DB, cfg *Config) (streamCounts, error) {
 			c.invalid++
 			continue
 		}
-		hr := parseFloat(hrStr)
+		// The parse comes before the filter, and that order is the whole fix: the
+		// filter below drops a measurement the watch could not take, and it used to
+		// swallow rows that simply would not parse.
+		var n numRow
+		hr := n.float("heart_rate", hrStr)
+		if n.bad() {
+			c.invalid++
+			continue
+		}
 		if hr <= 0 {
 			continue // a policy filter, not a broken row
 		}
@@ -684,7 +717,12 @@ func importStepsDaily(db *sql.DB, cfg *Config) (streamCounts, error) {
 			c.invalid++
 			continue
 		}
-		steps := parseInt(countStr)
+		var n numRow
+		steps := n.int("count", countStr)
+		if n.bad() {
+			c.invalid++
+			continue
+		}
 		if steps <= 0 {
 			continue // a policy filter, not a broken row
 		}
@@ -719,15 +757,20 @@ func importStepsDaily(db *sql.DB, cfg *Config) (streamCounts, error) {
 			continue
 		}
 
+		dist := n.float("distance", rec["distance"])
+		cal := n.float("calorie", rec["calorie"])
+		if n.bad() {
+			c.invalid++
+			continue
+		}
+
 		id := denoteDayID(date)
 		uuid := rec["datauuid"]
 		if uuid != "" {
 			id = uuid // use original UUID to avoid dedup issues
 		}
 
-		in.exec(id, date, dayTimeMs, steps,
-			parseFloat(rec["distance"]),
-			parseFloat(rec["calorie"]))
+		in.exec(id, date, dayTimeMs, steps, dist, cal)
 		c.offered++
 	}
 	if _, err := in.done(); err != nil {
@@ -775,15 +818,21 @@ func importStress(db *sql.DB, cfg *Config) (streamCounts, error) {
 			continue
 		}
 
+		var n numRow
+		score := n.float("score", scoreStr)
+		minScore := n.float("min", rec["min"])
+		maxScore := n.float("max", rec["max"])
+		if n.bad() {
+			c.invalid++
+			continue
+		}
+
 		id := rec["datauuid"]
 		if id == "" {
 			id = denoteID(start)
 		}
 
-		in.exec(id, startStr,
-			parseFloat(scoreStr),
-			parseFloat(rec["min"]),
-			parseFloat(rec["max"]))
+		in.exec(id, startStr, score, minScore, maxScore)
 		c.offered++
 	}
 	if _, err := in.done(); err != nil {
@@ -794,12 +843,16 @@ func importStress(db *sql.DB, cfg *Config) (streamCounts, error) {
 
 func importExercise(db *sql.DB, cfg *Config) (streamCounts, error) {
 	var c streamCounts
-	// Find exact exercise CSV (not photo/program variants)
-	matches, _ := filepath.Glob(filepath.Join(cfg.ShealthDir, "com.samsung.shealth.exercise.2*.csv"))
-	if len(matches) == 0 {
+	// Through newestCSV like every other stream. This globbed for itself and took
+	// matches[0] — and glob order is lexical, so matches[0] is the OLDEST export.
+	// Two generations in one folder and exercise read the stale one, reported
+	// success, and came back short by exactly the sessions the new dump had added.
+	// newestCSV's digit-only filter also drops the .photo./.program. variants this
+	// hand-rolled `.2*` pattern was working around.
+	path := cfg.shealthCSV("com.samsung.shealth.exercise.")
+	if path == "" {
 		return c, fmt.Errorf("csv not found")
 	}
-	path := matches[0]
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
@@ -841,14 +894,21 @@ func importExercise(db *sql.DB, cfg *Config) (streamCounts, error) {
 			typeCode = rec["activity_type"]
 		}
 
+		var n numRow
+		exType := n.int("exercise_type", typeCode)
+		durMs := n.int("duration", rec["com.samsung.health.exercise.duration"])
+		cal := n.float("total_calorie", rec["total_calorie"])
+		meanHR := n.float("mean_heart_rate", rec["com.samsung.health.exercise.mean_heart_rate"])
+		maxHR := n.float("max_heart_rate", rec["com.samsung.health.exercise.max_heart_rate"])
+		dist := n.float("total_distance", rec["com.samsung.health.exercise.total_distance"])
+		if n.bad() {
+			c.invalid++
+			continue
+		}
+
 		in.exec(id, startStr,
 			rec["com.samsung.health.exercise.end_time"],
-			parseInt(typeCode),
-			parseInt(rec["com.samsung.health.exercise.duration"]),
-			parseFloat(rec["total_calorie"]),
-			parseFloat(rec["com.samsung.health.exercise.mean_heart_rate"]),
-			parseFloat(rec["com.samsung.health.exercise.max_heart_rate"]),
-			parseFloat(rec["com.samsung.health.exercise.total_distance"]))
+			exType, durMs, cal, meanHR, maxHR, dist)
 		c.offered++
 	}
 	if _, err := in.done(); err != nil {
@@ -892,74 +952,22 @@ func importWeight(db *sql.DB, cfg *Config) (streamCounts, error) {
 			continue
 		}
 
+		var n numRow
+		kg := n.float("weight", rec["weight"])
+		fat := n.float("body_fat", rec["body_fat"])
+		muscle := n.float("muscle_mass", rec["muscle_mass"])
+		if n.bad() {
+			c.invalid++
+			continue
+		}
+
 		uuid := rec["datauuid"]
 		id := uuid
 		if id == "" {
 			id = denoteID(start)
 		}
 
-		in.exec(id, startStr,
-			parseFloat(rec["weight"]),
-			parseFloat(rec["body_fat"]),
-			parseFloat(rec["muscle_mass"]))
-		c.offered++
-	}
-	if _, err := in.done(); err != nil {
-		return c, err
-	}
-	return c, nil
-}
-
-func importHRV(db *sql.DB, cfg *Config) (streamCounts, error) {
-	var c streamCounts
-	path := cfg.shealthCSV("com.samsung.health.hrv.")
-	if path == "" {
-		return c, fmt.Errorf("csv not found")
-	}
-
-	_, records, err := shealthReadCSV(path)
-	if err != nil {
-		return c, err
-	}
-
-	in, err := newInserter(db, `INSERT OR IGNORE INTO hrv (id, start_time, hrv_rmssd) VALUES (?, ?, ?)`)
-	if err != nil {
-		return c, err
-	}
-
-	for _, rec := range records {
-		// HRV CSV column names vary; try common patterns
-		startStr := firstNonEmpty(rec,
-			"com.samsung.health.hrv.start_time",
-			"start_time")
-		hrvStr := firstNonEmpty(rec,
-			"com.samsung.health.hrv.rmssd",
-			"rmssd",
-			"heart_rate_variability")
-		if startStr == "" {
-			c.invalid++
-			continue
-		}
-
-		start, err := parseShealthTime(startStr)
-		if err != nil {
-			c.invalid++
-			continue
-		}
-		if isSentinelTime(start) {
-			c.rejected++
-			continue
-		}
-
-		uuid := firstNonEmpty(rec,
-			"com.samsung.health.hrv.datauuid",
-			"datauuid")
-		id := uuid
-		if id == "" {
-			id = denoteID(start)
-		}
-
-		in.exec(id, startStr, parseFloat(hrvStr))
+		in.exec(id, startStr, kg, fat, muscle)
 		c.offered++
 	}
 	if _, err := in.done(); err != nil {

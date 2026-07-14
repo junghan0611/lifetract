@@ -393,9 +393,15 @@ func parseStepRecords(cfg *Config, w Window) ([]StepRecord, error) {
 			if !w.contains(ct) {
 				continue
 			}
-			date := dateStr(ct)
-			count, _ := strconv.Atoi(countStr)
-			dailySteps[date] = count // merged record, no summing needed
+			var n numRow
+			count := n.int("count", countStr)
+			if n.bad() {
+				return nil, fmt.Errorf("steps: %w", n.err)
+			}
+			if count <= 0 {
+				continue // a policy filter, same as the DB path
+			}
+			dailySteps[dateStr(ct)] = count // merged record, no summing needed
 			continue
 		}
 
@@ -408,9 +414,15 @@ func parseStepRecords(cfg *Config, w Window) ([]StepRecord, error) {
 			continue
 		}
 
-		date := dateStr(t)
-		count, _ := strconv.Atoi(countStr)
-		dailySteps[date] = count // merged record, no summing needed
+		var n numRow
+		count := n.int("count", countStr)
+		if n.bad() {
+			return nil, fmt.Errorf("steps: %w", n.err)
+		}
+		if count <= 0 {
+			continue // a policy filter, same as the DB path
+		}
+		dailySteps[dateStr(t)] = count // merged record, no summing needed
 	}
 
 	return stepsMapToSorted(dailySteps), nil
@@ -444,9 +456,12 @@ func parseStepRecordsFromPedometer(cfg *Config, w Window) ([]StepRecord, error) 
 			continue
 		}
 
-		date := dateStr(start)
-		count, _ := strconv.Atoi(countStr)
-		dailySteps[date] += count
+		var n numRow
+		count := n.int("count", countStr)
+		if n.bad() {
+			return nil, fmt.Errorf("steps: %w", n.err)
+		}
+		dailySteps[dateStr(start)] += count
 	}
 
 	return stepsMapToSorted(dailySteps), nil
@@ -610,16 +625,12 @@ func parseStressRecords(cfg *Config, w Window) ([]StressRecord, error) {
 }
 
 func parseExerciseRecords(cfg *Config, w Window) ([]ExerciseRecord, error) {
+	// It already had the newest export from shealthCSV, then threw it away for
+	// matches[0] — the oldest one. Same bug as the importer had, same file.
 	path := cfg.shealthCSV("com.samsung.shealth.exercise.")
 	if path == "" {
 		return nil, fmt.Errorf("exercise CSV not found")
 	}
-
-	matches, _ := filepath.Glob(filepath.Join(cfg.ShealthDir, "com.samsung.shealth.exercise.2*.csv"))
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("exercise CSV not found")
-	}
-	path = matches[0]
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
@@ -642,8 +653,11 @@ func parseExerciseRecords(cfg *Config, w Window) ([]ExerciseRecord, error) {
 			continue
 		}
 
-		durStr := rec["com.samsung.health.exercise.duration"]
-		durMs, _ := strconv.ParseFloat(durStr, 64)
+		var n numRow
+		durMs := n.float("duration", rec["com.samsung.health.exercise.duration"])
+		if n.bad() {
+			return nil, fmt.Errorf("exercise: %w", n.err)
+		}
 		durMin := durMs / 60000.0
 		if durMin <= 0 {
 			continue
@@ -690,11 +704,19 @@ func parseExerciseRecords(cfg *Config, w Window) ([]ExerciseRecord, error) {
 	return results, nil
 }
 
+// parseTimeRecords cannot answer, and says so.
+//
+// aTimeLogger has no CSV export — it is a SQLite file, and the DB path is the only
+// one that reads it. This used to return an empty list, so in CSV mode the time
+// axis was not missing, it was ZERO: timeline, today and read each assembled a day
+// with no tracked hours in it and exited 0.
+//
+// `time` already refused to do that ("this is not an empty result"). The three
+// commands that fold the same axis into a larger answer quietly did the opposite —
+// one tool with two voices about one fact. The collector downstream consumes depth
+// 0 and would have written the silence into a public record as a day of no work.
 func parseTimeRecords(cfg *Config, w Window) ([]TimeRecord, error) {
-	_ = w // aTimeLogger has no CSV source; the DB path answers this
-	var results []TimeRecord
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Date > results[j].Date
-	})
-	return results, nil
+	_ = w
+	return nil, fmt.Errorf("aTimeLogger has no CSV source, so the time axis cannot be read without the DB "+
+		"(run 'lifetract import --exec'; expected at %s) — this is not an empty result", cfg.ATimeLoggerDB)
 }

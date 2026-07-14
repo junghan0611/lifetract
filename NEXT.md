@@ -4,7 +4,74 @@
 
 ---
 
-## 🔶 커밋 대기 — 잃음 신고 (2026-07-14, 관측소 요청건)
+# NOW — 독립 검수 끝. ship 판정: **GO** (2026-07-14 16:20 KST)
+
+- **Stem:** `timeline`은 DB를 직접 읽지 않고 lifetract 출력을 사실로 소비한다. 따라서
+  *읽지 못함(hole)* 이 `[]`/0으로 바뀌는 경로가 하나라도 남으면 배포하지 않는다.
+- **Current:** `main` HEAD `2491c21` + 워킹트리(미커밋). **push 없음.**
+  독립 검수에서 **여섯 자리를 더 찾아 닫았다** — 전임이 leaf/aggregator를 닫는 동안
+  *숫자를 읽는 층*과 *스트림을 세는 층*이 열려 있었다.
+- **Verify (전부 통과):** 122 tests · vet · race · TZ UTC/KST/NY 동일 해시 ·
+  실 export **사본** import 2회 (`status=ok`, 202,485행, **전 스트림 invalid 0**, 승격됨,
+  2회차 delta 전부 0) · `time`/`timeline` smoke. 네 수정은 **되돌려서 실패 확인**했다.
+- **다음 한 걸음:** GLG가 push 판단 → `./run.sh deploy` → 관측소 `collect.py` 연결.
+
+## 이번 판에서 닫은 것 (독립 검수 발견)
+
+1. **읽지 못한 값이 0 으로 둔갑했다** (`numRow`, helpers.go) — `parseInt/parseFloat`가 파싱
+   실패를 0으로 접었는데 **0은 이미 임자가 있었다**: `heart_rate <= 0` / `steps <= 0`은
+   워치가 못 잰 측정을 버리는 *정책 필터*다. `heart_rate="garbage"`가 그 문으로 빠져나가
+   imported도 invalid도 아닌 채 사라졌다. stress는 더 나빴다 — garbage가 **진짜 0점으로
+   DB에 앉아** 그날 평균을 끌어내렸다. 8개 importer 전부 strict.
+2. **DB timestamp 8자리가 zero time 을 만들었다** (`db_query.go`) — sleep은 조용히 skip,
+   **exercise는 `0001-01-01`로 날짜를 지어내** 사실인 양 내보냈다. `dbQueryEvent` 포함 전파.
+3. **CSV 폴백에 시간축이 없는데 0 으로 나갔다** — `time`은 "DB 없이는 답 못 한다"고 큰 소리로
+   거절하는데 같은 축을 접어넣는 `timeline`/`today`/`read`는 **그냥 빼고 exit 0** 했다.
+   한 도구가 한 사실에 두 목소리. 셋 다 이제 거절한다.
+4. **exercise 가 가장 오래된 export 를 읽고 있었다** — `newestCSV`가 바로 그 함정
+   (glob 정렬 = 옛 것이 먼저) 때문에 존재하는데 exercise만 `matches[0]`으로 우회했다.
+   **stress histogram 사건과 같은 병, 다른 파일.** import·조회 두 자리 다.
+5. **🔴 `hrv` 는 한 번도 존재한 적이 없다** — export의 HRV CSV에 **`rmssd` 컬럼이 없다**
+   (값은 `binning_data` JSON, 본 도구는 안 읽음). 1,058행이 전부 `0.0`으로 들어와 앉아
+   있었고 **행수가 맞아서 손실 가드는 내내 조용했다.** 세고 있었지만 세던 게 빈 껍데기였다.
+   **GLG 결정(2026-07-14): 버린다.** `retiredStreams`에 이유와 함께 등록.
+   *조회 표면이 없어 그 0이 밖으로 나간 적은 없다 — DB 안에만 앉아 있었다.*
+6. **스트림이 조용히 사라지는 것 자체를 막았다** — importer를 지우면 그 스트림은 원장에서
+   그냥 이름이 안 나오고, 그건 사고로 사라진 스트림과 구별되지 않는다. 이제 **원장이 알던
+   스트림을 이번 run이 건드리지 않으면 경고**한다. (은퇴는 `retiredStreams`가 명시적으로.)
+
+## 안 한 것 — 이유와 경계
+
+- **`db_dropped` machine field (GPT B-3): 안 함.** 실 데이터 duplicate 0이고, `INSERT OR
+  IGNORE`가 버린 수는 이미 `rejected[]` 문자열로 **말은 하고 있다**. 소비자가 그 수를
+  기계로 읽어야 할 때 열면 된다. 지금 넣으면 계약만 넓어진다. *(GLG: "정말 필요한 것만")*
+- **HRV 를 진짜로 읽기 (`binning_data` JSON 파싱): 안 함.** GLG가 "필요없다"고 닫았다.
+  되살리려면 그때 별도 판.
+- **CSV 폴백 조회의 timestamp `continue`: 안 함.** numeric은 닫았으나(strict) timestamp
+  파싱 실패는 여전히 조용히 건너뛴다. DB가 없을 때만 도달하고 통합 뷰는 이미 막혔으므로
+  timeline 소비자에겐 닿지 않는다. 별도 판.
+
+## Known limitation — `promoteDB` 와 동시 reader
+
+`promoteDB`는 live `-wal`/`-shm`을 먼저 지우고 rename한다 (single-process/rest 전제).
+**이번 검수에서 그 전제가 깨질 수 있음을 실증했다:** 운영 DB를 *읽기 전용으로* 조회했을 뿐인데
+SQLite가 `lifetract.db-shm`(32KB) + `-wal`(0B)을 만들었다. 즉 **reader 하나만 붙어 있어도
+sidecar가 생긴다.** 지금은 그 sidecar를 다음 import가 걷어내므로 무해하지만, 동시 timeline
+reader가 상시화되면 **file lock + live checkpoint** 가 필요하다. 무리하게 지금 키우지 않는다.
+
+## Read
+
+`AGENTS.md §3.5` (6항 신설), `junghan0611/timeline/README.md`의 “A missing skill is a hole,
+not a zero”, `lifetract/{helpers,import_exec,import_ledger,db_query}.go`,
+`lifetract/{semantic_truth,db_semantic}_test.go`.
+
+## Do not touch
+
+운영 `self-tracking-data/lifetract.db` (검증은 전부 **사본**으로 했다), **push는 GLG 판단.**
+
+# LEDGER — 오늘 닫힌 경로와 과거 맥락
+
+## 🔶 잃음 신고 감사 기록 (2026-07-14, 관측소 요청건)
 
 **`import` 가 스트림을 통째로 잃고도 `"ok"` 라고 하던 자리를 닫았다.** 오늘 아침
 stress 27,598 → 0 을 잡은 건 테스트가 아니라 *사람 눈에 띈 총 행수* 였다 (203,539 →

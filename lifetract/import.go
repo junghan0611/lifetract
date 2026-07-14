@@ -35,7 +35,7 @@ func cmdImport(cfg *Config) (interface{}, error) {
 		{"stress", "com.samsung.shealth.stress.", true},
 		{"exercise", "com.samsung.shealth.exercise.2", true},
 		{"weight", "com.samsung.health.weight.", true},
-		{"hrv", "com.samsung.health.hrv.", true},
+		{"hrv", "com.samsung.health.hrv.", false}, // retired: the file has no rmssd column
 		{"activity_summary", "com.samsung.shealth.activity.day_summary.", false},
 	}
 

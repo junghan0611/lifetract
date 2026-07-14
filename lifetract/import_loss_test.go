@@ -354,14 +354,20 @@ func TestLedgerSurvivesTheImportThatDeletesTheDB(t *testing.T) {
 
 	// And every stream is on the record, zero or not. A zero that goes unrecorded
 	// is a loss that goes unnoticed next time.
-	// 10, not 9: atl_category is a stream of its own now. It used to be imported
-	// without being counted, so a category table that emptied out took the whole
-	// time axis with it (dbQueryTime joins through it) while the ledger watched the
+	//
+	// 9: the six Samsung streams plus weight, and atl_category alongside atl_interval
+	// — the category table is a stream of its own, because it used to be imported
+	// without being counted, so a category table that emptied out took the whole time
+	// axis with it (dbQueryTime joins through it) while the ledger watched the
 	// interval count sit there, unchanged and reassuring.
+	//
+	// hrv is not among them: it is retired (retiredStreams). The export has no rmssd
+	// column, so all 1,058 of its rows had been landing as 0.0 while the count kept
+	// the loss guard quiet.
 	var streams int
 	db.QueryRow(`SELECT COUNT(DISTINCT table_name) FROM import_log`).Scan(&streams)
-	if streams != 10 {
-		t.Errorf("ledger covers %d streams, want 10 — a stream left no trace", streams)
+	if streams != 9 {
+		t.Errorf("ledger covers %d streams, want 9 — a stream left no trace", streams)
 	}
 }
 

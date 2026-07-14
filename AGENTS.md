@@ -113,10 +113,22 @@ DB 가 본 경로, CSV 는 안전망, HA 는 오늘 자리 라이브 메움. `li
 
 ```
 sleep / sleep_stage / heart_rate / steps_daily / stress /
-exercise / weight / hrv          ← Samsung Health 8 테이블
-atl_category / atl_interval      ← aTimeLogger 18 카테고리 / 13,918 intervals
-import_log                       ← 임포트 메타
+exercise / weight               ← Samsung Health 7 테이블
+atl_category / atl_interval     ← aTimeLogger 18 카테고리 / 14,617 intervals
+import_log                      ← 임포트 메타
 ```
+
+**`hrv` 는 은퇴했다 (2026-07-14).** Samsung export 의 HRV CSV 에는 **`rmssd` 컬럼이
+아예 없다** — 측정값은 `binning_data` JSON 에 있고 본 도구는 그 JSON 을 읽지 않는다.
+그래서 1,058 행이 전부 `hrv_rmssd = 0.0` 으로 들어와 앉아 있었고, **행수가 맞으니 손실
+가드는 내내 조용했다.** 스트림은 통째로 있으면서 그 안에 아무것도 없을 수 있다 — 우리는
+HRV 를 가진 적이 없고, 타임스탬프를 가지고 있었다. (조회 표면이 없어 그 0 이 밖으로 나간
+적은 없다.)
+
+은퇴는 `retiredStreams` (import_ledger.go) 에 **이유와 함께** 등록한다. importer 만
+지우면 그 스트림은 원장에서 조용히 사라지고, 그건 사고로 사라진 스트림과 구별되지 않는다.
+그래서 원장이 의도적으로 그 이름을 버리고, **원장이 알던 스트림을 이번 run 이 건드리지도
+않았으면 경고한다** — importer 를 지우는 것이 가장 조용한 손실이 되지 않도록.
 
 ## 3. Denote ID 축
 
@@ -228,6 +240,32 @@ aTimeLogger(db3)는 경로가 달라 따로 멈춘다.
 됐는데 import 는 `"ok"` 라고 했다. **테스트는 초록불이었다.** 잡은 건 총 행수가 203,539 →
 175,941 로 떨어진 걸 사람이 눈으로 본 것뿐이다. 그 눈이 이 조항이다
 (`import_loss_test.go`, 실 export 로 재현 검증).*
+
+**6. 읽지 못한 값은 0 이 아니다. 읽지 못한 스트림은 빈 스트림이 아니다.**
+
+`parseInt`/`parseFloat` 가 파싱 실패를 조용히 0 으로 접고 있었다. 그런데 **0 은 이미
+임자가 있었다** — `heart_rate <= 0` / `steps <= 0` 은 워치가 재지 못한 측정을 버리는
+*정책 필터* 다. 그래서 `heart_rate="garbage"` 는 0 이 되어 **다른 이유로 만든 문으로
+빠져나갔고**, imported 도 invalid 도 아닌 채 어떤 숫자도 움직이지 않았다. stress 는 더
+나빴다: garbage 가 **진짜 0 점으로 DB 에 앉아** 그날 평균을 끌어내렸다.
+
+- **빈 칸은 export 가 안 가진 값** 이다 (0, 정상). **있는데 안 읽히는 칸은 파일이 모양을
+  바꾼 것** 이다 → `invalid` → 경고 → 미승격. 그 구분이 `numRow` (helpers.go) 다.
+- **조회 쪽도 같다.** DB 에 든 timestamp 가 안 읽히면 그 밤은 "없던 밤" 이 아니다.
+  `parseShealthTime(...), _` 여덟 자리가 zero time 을 만들어 sleep 은 조용히 건너뛰고,
+  exercise 는 **`0001-01-01` 로 날짜를 지어내** 사실인 양 내보냈다.
+- **CSV 폴백에도 시간축은 없다.** `time` 은 "DB 없이는 답할 수 없다" 고 큰 소리로 거절하는데,
+  같은 축을 접어넣는 `timeline`/`today`/`read` 는 그냥 **빼고 내보냈다** — 한 도구가 한
+  사실에 두 목소리를 냈다. 셋 다 이제 거절한다. aTimeLogger 는 CSV 소스가 없으므로 그
+  시간은 0 이 아니라 *못 읽은 것* 이다.
+- **스트림도 마찬가지다.** `hrv` 는 export 에 `rmssd` 컬럼이 없어 1,058 행이 전부 0.0 으로
+  들어오고 있었는데 **행수가 맞아서 손실 가드가 내내 조용했다.** 세고 있었지만 세던 것이 빈
+  껍데기였다. 은퇴는 `retiredStreams` 에 이유와 함께 적고, **원장이 알던 스트림을 이번 run 이
+  건드리지 않으면 경고한다** — importer 를 지우는 일이 가장 조용한 손실이 되지 않도록.
+
+*계약의 뿌리는 그대로다: 조용한 실패는 실패가 아니라 거짓말이다. 1–3 항은 조용히 틀린
+숫자를, 4–5 항은 조용히 없는 숫자를, 6 항은 **조용히 읽지 못한 것이 0 으로 둔갑하는 것**을
+막는다.*
 
 ### 프라이버시 경계 — CLI 가 유일한 문
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -154,29 +155,43 @@ func stripBOM(s string) string {
 	return s
 }
 
-// parseInt parses a string to int, handling floats like "85.0".
-func parseInt(s string) int {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	if strings.Contains(s, ".") {
-		f, _ := strconv.ParseFloat(s, 64)
-		return int(f)
-	}
-	n, _ := strconv.Atoi(s)
-	return n
-}
+// numRow reads the numbers of one row and remembers the first field that was there
+// and would not parse.
+//
+// The old parseInt/parseFloat folded a parse error into 0, and 0 was already taken.
+// `heart_rate <= 0` and `steps <= 0` are policy filters, written to drop the
+// measurements the watch could not take — so `heart_rate="garbage"` came back as 0
+// and left through a door built for a different reason, counted as neither imported
+// nor invalid. A stress score did worse: it LANDED as a real 0 and pulled the day's
+// average down. Nothing anywhere moved.
+//
+// An empty field is a value the export does not have: legitimate, common, still 0.
+// A field that is present and unreadable means the file is no longer the file we
+// think we are reading, and that is what invalid counts.
+type numRow struct{ err error }
 
-// parseFloat parses a string to float64.
-func parseFloat(s string) float64 {
+func (n *numRow) float(field, s string) float64 {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0
 	}
-	f, _ := strconv.ParseFloat(s, 64)
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		if n.err == nil {
+			n.err = fmt.Errorf("%s: %q is not a number", field, s)
+		}
+		return 0
+	}
 	return f
 }
+
+// int reads a whole number, tolerating the "85.0" the export writes for integers.
+func (n *numRow) int(field, s string) int {
+	return int(n.float(field, s))
+}
+
+// bad reports whether any field in this row failed to parse.
+func (n *numRow) bad() bool { return n.err != nil }
 
 // round1 rounds to 1 decimal place.
 func round1(f float64) float64 {

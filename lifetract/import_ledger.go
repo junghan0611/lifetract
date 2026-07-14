@@ -37,6 +37,23 @@ const (
 	statusWarn   = "warning"
 )
 
+// retiredStreams are streams this tool deliberately no longer imports, with the
+// reason it stopped.
+//
+// hrv is the first: the Samsung export's HRV file has no rmssd column at all — the
+// measurement lives in a binning_data JSON this tool does not read. Every row of it
+// landed as hrv_rmssd = 0.0, 1,058 of them in the live DB, and because the COUNT was
+// right the loss guard was satisfied the whole time. A stream can be entirely
+// present and hold none of what it claims to. We never had HRV; we had timestamps.
+//
+// Retiring a stream HERE, rather than only deleting its importer, is what keeps the
+// removal from becoming one more silence. The baseline drops these on purpose and
+// the run says which — instead of a name simply ceasing to appear in the ledger,
+// which is indistinguishable from a stream that vanished by accident.
+var retiredStreams = map[string]string{
+	"hrv": "the export carries no rmssd column — every row imported as 0.0, so the stream was never real",
+}
+
 // nowStamp is the clock the ledger reads, and a run must read it exactly once.
 // It is a variable so a test can make it tick on every read: the defect it guards
 // against — a stamp taken per row — is invisible to a clock that never moves, and
@@ -165,6 +182,14 @@ func readBaseline(path string) *importBaseline {
 		}
 		r.Rows = int(n.Int64)
 		r.SourcePath = sp.String
+
+		// A retired stream leaves the ledger for good: not carried into the new DB,
+		// not compared against, not counted in the total. Otherwise its last count
+		// would sit in the baseline forever, and every future import would report a
+		// stream it no longer has as lost.
+		if _, retired := retiredStreams[r.Table]; retired {
+			continue
+		}
 		b.History = append(b.History, r)
 
 		// Rows arrive in id order, so the last write per stream is the newest.

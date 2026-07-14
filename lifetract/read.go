@@ -48,7 +48,14 @@ func csvReadDay(cfg *Config, day time.Time) (interface{}, error) {
 	dateS := dateStr(day)
 	dayID := denoteDayID(dateS)
 
-	// A source that could not be read is not a day without that measurement.
+	// A source that could not be read is not a day without that measurement — and the
+	// time axis is a source this path cannot read at all. dbQueryDay fills entry.Time
+	// from aTimeLogger; the CSV path silently left the field nil, so a day came back
+	// looking like a day with no tracked hours.
+	if _, err := parseTimeRecords(cfg, allTime()); err != nil {
+		return nil, fmt.Errorf("time: %w", err)
+	}
+
 	sleepRecs, err := parseSleepRecords(cfg, allTime())
 	if err != nil {
 		return nil, fmt.Errorf("sleep: %w", err)
