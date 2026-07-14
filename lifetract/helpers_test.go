@@ -42,7 +42,10 @@ func TestParseShealthTime(t *testing.T) {
 }
 
 func TestParseFlags(t *testing.T) {
-	flags := parseFlags([]string{"--days", "30", "--summary", "--category", "Deep Work"})
+	flags, err := parseFlags([]string{"--days", "30", "--summary", "--category", "Deep Work"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if flags["days"] != "30" {
 		t.Errorf("days = %q, want 30", flags["days"])
 	}
@@ -51,6 +54,26 @@ func TestParseFlags(t *testing.T) {
 	}
 	if flags["category"] != "Deep Work" {
 		t.Errorf("category = %q, want Deep Work", flags["category"])
+	}
+}
+
+// A parser that discards what it does not understand makes the tool answer a
+// question the caller never asked — and say nothing about the swap. `--fro` used
+// to be dropped on the floor: exit 0, a perfectly shaped JSON list, for the
+// default window instead of the July one.
+func TestParseFlagsRefusesWhatItCannotHonour(t *testing.T) {
+	bad := [][]string{
+		{"--fro", "2026-07-01"},        // typo
+		{"--from"},                     // no value
+		{"--from", "--days", "3"},      // value eaten by the next flag
+		{"--days", "3", "--days", "5"}, // said twice
+		{"--summary", "--summary"},     // said twice (bool)
+		{"--category"},                 // no value
+	}
+	for _, args := range bad {
+		if _, err := parseFlags(args); err == nil {
+			t.Errorf("parseFlags(%v) = nil error — silently swallowed", args)
+		}
 	}
 }
 
@@ -102,9 +125,9 @@ func TestFlagDays(t *testing.T) {
 		want  int
 	}{
 		{map[string]string{"days": "30"}, 30},
-		{map[string]string{"days": "0"}, 7},   // invalid → default
-		{map[string]string{"days": "-1"}, 7},  // invalid → default
-		{map[string]string{}, 7},               // missing → default
+		{map[string]string{"days": "0"}, 7},  // invalid → default
+		{map[string]string{"days": "-1"}, 7}, // invalid → default
+		{map[string]string{}, 7},             // missing → default
 	}
 	for _, tt := range tests {
 		got := flagDays(tt.flags)

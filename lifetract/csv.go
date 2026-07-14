@@ -182,7 +182,7 @@ var exerciseTypes = map[string]string{
 
 // --- CSV parsers ---
 
-func parseSleepRecords(cfg *Config, days int) ([]SleepRecord, error) {
+func parseSleepRecords(cfg *Config, w Window) ([]SleepRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.sleep.")
 	if path == "" {
 		return nil, fmt.Errorf("sleep CSV not found in %s", cfg.ShealthDir)
@@ -193,7 +193,6 @@ func parseSleepRecords(cfg *Config, days int) ([]SleepRecord, error) {
 		return nil, err
 	}
 
-	cutoff := cutoffTime(days)
 	var results []SleepRecord
 	stageMap := loadSleepStages(cfg)
 
@@ -208,7 +207,7 @@ func parseSleepRecords(cfg *Config, days int) ([]SleepRecord, error) {
 		if err != nil {
 			continue
 		}
-		if start.Before(cutoff) {
+		if !w.contains(start) {
 			continue
 		}
 
@@ -345,10 +344,10 @@ func loadSleepStages(cfg *Config) map[string]*SleepStages {
 	return result
 }
 
-func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
+func parseStepRecords(cfg *Config, w Window) ([]StepRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.step_daily_trend.")
 	if path == "" {
-		return parseStepRecordsFromPedometer(cfg, days)
+		return parseStepRecordsFromPedometer(cfg, w)
 	}
 
 	_, records, err := shealthReadCSV(path)
@@ -356,7 +355,6 @@ func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
 		return nil, err
 	}
 
-	cutoff := cutoffTime(days)
 	dailySteps := make(map[string]int)
 
 	for _, rec := range records {
@@ -381,7 +379,7 @@ func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
 			if err != nil {
 				continue
 			}
-			if ct.Before(cutoff) {
+			if !w.contains(ct) {
 				continue
 			}
 			date := dateStr(ct)
@@ -395,7 +393,7 @@ func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
 			continue
 		}
 		t := time.Unix(ms/1000, 0)
-		if t.Before(cutoff) {
+		if !w.contains(t) {
 			continue
 		}
 
@@ -407,7 +405,7 @@ func parseStepRecords(cfg *Config, days int) ([]StepRecord, error) {
 	return stepsMapToSorted(dailySteps), nil
 }
 
-func parseStepRecordsFromPedometer(cfg *Config, days int) ([]StepRecord, error) {
+func parseStepRecordsFromPedometer(cfg *Config, w Window) ([]StepRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.tracker.pedometer_step_count.")
 	if path == "" {
 		return nil, fmt.Errorf("step count CSV not found")
@@ -418,7 +416,6 @@ func parseStepRecordsFromPedometer(cfg *Config, days int) ([]StepRecord, error) 
 		return nil, err
 	}
 
-	cutoff := cutoffTime(days)
 	dailySteps := make(map[string]int)
 
 	for _, rec := range records {
@@ -432,7 +429,7 @@ func parseStepRecordsFromPedometer(cfg *Config, days int) ([]StepRecord, error) 
 		if err != nil {
 			continue
 		}
-		if start.Before(cutoff) {
+		if !w.contains(start) {
 			continue
 		}
 
@@ -455,7 +452,7 @@ func stepsMapToSorted(m map[string]int) []StepRecord {
 	return results
 }
 
-func parseHeartRecords(cfg *Config, days int) ([]HeartRecord, error) {
+func parseHeartRecords(cfg *Config, w Window) ([]HeartRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.tracker.heart_rate.")
 	if path == "" {
 		return nil, fmt.Errorf("heart rate CSV not found")
@@ -466,7 +463,6 @@ func parseHeartRecords(cfg *Config, days int) ([]HeartRecord, error) {
 		return nil, err
 	}
 
-	cutoff := cutoffTime(days)
 	type dailyHR struct {
 		sum     float64
 		min     int
@@ -486,7 +482,7 @@ func parseHeartRecords(cfg *Config, days int) ([]HeartRecord, error) {
 		if err != nil {
 			continue
 		}
-		if start.Before(cutoff) {
+		if !w.contains(start) {
 			continue
 		}
 
@@ -529,7 +525,7 @@ func parseHeartRecords(cfg *Config, days int) ([]HeartRecord, error) {
 	return results, nil
 }
 
-func parseStressRecords(cfg *Config, days int) ([]StressRecord, error) {
+func parseStressRecords(cfg *Config, w Window) ([]StressRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.stress.")
 	if path == "" {
 		return nil, fmt.Errorf("stress CSV not found")
@@ -540,7 +536,6 @@ func parseStressRecords(cfg *Config, days int) ([]StressRecord, error) {
 		return nil, err
 	}
 
-	cutoff := cutoffTime(days)
 	type dailyStress struct {
 		sum     float64
 		min     int
@@ -560,7 +555,7 @@ func parseStressRecords(cfg *Config, days int) ([]StressRecord, error) {
 		if err != nil {
 			continue
 		}
-		if start.Before(cutoff) {
+		if !w.contains(start) {
 			continue
 		}
 
@@ -603,7 +598,7 @@ func parseStressRecords(cfg *Config, days int) ([]StressRecord, error) {
 	return results, nil
 }
 
-func parseExerciseRecords(cfg *Config, days int) ([]ExerciseRecord, error) {
+func parseExerciseRecords(cfg *Config, w Window) ([]ExerciseRecord, error) {
 	path := cfg.shealthCSV("com.samsung.shealth.exercise.")
 	if path == "" {
 		return nil, fmt.Errorf("exercise CSV not found")
@@ -620,7 +615,6 @@ func parseExerciseRecords(cfg *Config, days int) ([]ExerciseRecord, error) {
 		return nil, err
 	}
 
-	cutoff := cutoffTime(days)
 	var results []ExerciseRecord
 
 	for _, rec := range records {
@@ -633,7 +627,7 @@ func parseExerciseRecords(cfg *Config, days int) ([]ExerciseRecord, error) {
 		if err != nil {
 			continue
 		}
-		if start.Before(cutoff) {
+		if !w.contains(start) {
 			continue
 		}
 
@@ -685,8 +679,8 @@ func parseExerciseRecords(cfg *Config, days int) ([]ExerciseRecord, error) {
 	return results, nil
 }
 
-func parseTimeRecords(cfg *Config, days int) ([]TimeRecord, error) {
-	_ = days
+func parseTimeRecords(cfg *Config, w Window) ([]TimeRecord, error) {
+	_ = w // aTimeLogger has no CSV source; the DB path answers this
 	var results []TimeRecord
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Date > results[j].Date

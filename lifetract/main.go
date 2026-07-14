@@ -33,12 +33,21 @@ Commands:
   ha <sub> [arg]         Home Assistant REST (ping|state|states|entities|history)
 
 Flags:
-  --days N               Days to look back (default: 7)
+  --days N               Window length (default: 7)
   --from YYYY-MM-DD      Window start, inclusive
-  --to   YYYY-MM-DD      Window end, EXCLUSIVE — overrides --days
+  --to   YYYY-MM-DD      Window end, EXCLUSIVE
   --data-dir DIR         Data directory (default: ~/repos/gh/self-tracking-data)
   --summary              Summary/aggregated mode
   --category CAT         Filter time category
+
+Windows (every combination means one thing; --days is never ignored):
+  --days N               [today-N, tomorrow)   the last N days, and today
+  --days N --to T        [T-N, T)              N days ending at T
+  --days N --from F      [F, F+N)              N days starting at F
+  --from F --to T        [F, T)
+  --from F               [F, tomorrow)
+  --to T                 everything before T
+  --days N --from F --to T   → error (overspecified: say which two you mean)
 
 Time contract:
   All dates are KST (fixed +09:00). The answer never depends on the caller's $TZ.
@@ -71,12 +80,13 @@ func main() {
 
 	// Parse flags and positional args
 	args := os.Args[2:]
-	flags := parseFlags(args)
+	flags, err := parseFlags(args)
+	if err != nil {
+		fail(err)
+	}
 	cfg, err := newConfig(flags)
 	if err != nil {
-		errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
-		fmt.Fprintln(os.Stderr, string(errJSON))
-		os.Exit(1)
+		fail(err)
 	}
 
 	// Extract positional arg (for read command)
@@ -133,9 +143,7 @@ func main() {
 	}
 
 	if err != nil {
-		errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
-		fmt.Fprintln(os.Stderr, string(errJSON))
-		os.Exit(1)
+		fail(err)
 	}
 
 	out, err := json.MarshalIndent(emptyList(result), "", "  ")
@@ -144,6 +152,14 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
+}
+
+// fail reports on stderr as JSON and exits non-zero. Never on stdout: a caller
+// piping us into jq must not find an error object where a list belongs.
+func fail(err error) {
+	errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
+	fmt.Fprintln(os.Stderr, string(errJSON))
+	os.Exit(1)
 }
 
 // emptyList turns a nil slice into an empty one, so a quiet day marshals to []
@@ -158,23 +174,54 @@ func emptyList(v interface{}) interface{} {
 	return v
 }
 
-// parseFlags parses --key value pairs from args.
-func parseFlags(args []string) map[string]string {
+// Every flag the CLI understands. A flag not in here is a typo, and a typo has to
+// be told, not absorbed.
+var (
+	boolFlags  = map[string]bool{"summary": true, "exec": true}
+	valueFlags = map[string]bool{
+		"days": true, "from": true, "to": true,
+		"category": true, "data-dir": true, "shealth-dir": true,
+	}
+)
+
+// parseFlags parses --key value pairs, and refuses everything it does not
+// understand.
+//
+// It used to shrug. `--fro 2026-07-01` was dropped on the floor and the query
+// answered for the default window with exit 0 — the caller asked about July and
+// was told about this week, in the same shape, with nothing to mark the swap.
+// `--from` with no value did the same. A parser that silently discards input is
+// the tool lying about what question it answered.
+func parseFlags(args []string) (map[string]string, error) {
 	flags := make(map[string]string)
+
 	for i := 0; i < len(args); i++ {
-		if len(args[i]) > 2 && args[i][:2] == "--" {
-			key := args[i][2:]
-			if key == "summary" || key == "exec" {
-				flags[key] = "true"
-				continue
+		a := args[i]
+		if !strings.HasPrefix(a, "--") {
+			continue // positional (e.g. a Denote ID); handled by the caller
+		}
+		key := strings.TrimPrefix(a, "--")
+
+		switch {
+		case boolFlags[key]:
+			if _, dup := flags[key]; dup {
+				return nil, fmt.Errorf("--%s given twice", key)
 			}
-			if i+1 < len(args) {
-				flags[key] = args[i+1]
-				i++
+			flags[key] = "true"
+		case valueFlags[key]:
+			if _, dup := flags[key]; dup {
+				return nil, fmt.Errorf("--%s given twice", key)
 			}
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+				return nil, fmt.Errorf("--%s needs a value", key)
+			}
+			flags[key] = args[i+1]
+			i++
+		default:
+			return nil, fmt.Errorf("unknown flag --%s", key)
 		}
 	}
-	return flags
+	return flags, nil
 }
 
 func flagDays(flags map[string]string) int {

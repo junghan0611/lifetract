@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"sort"
 )
 
@@ -42,15 +44,34 @@ func cmdTimeline(cfg *Config) (interface{}, error) {
 	return csvTimeline(cfg)
 }
 
-// csvTimeline builds timeline from CSV parsing (fallback).
+// csvTimeline builds the timeline from the CSV exports (fallback).
+//
+// Every source error used to go into `_`. A timeline missing three of its six
+// feeds came back looking exactly like a timeline of three quiet days — the tool
+// could not see, and reported that there was nothing to see. The rows still go to
+// stdout (a caller must always get a list), but a source that did not answer is
+// named on stderr instead of being folded into the silence.
 func csvTimeline(cfg *Config) (interface{}, error) {
-	days := cfg.Days
-	sleepRecs, _ := parseSleepRecords(cfg, days)
-	stepRecs, _ := parseStepRecords(cfg, days)
-	heartRecs, _ := parseHeartRecords(cfg, days)
-	stressRecs, _ := parseStressRecords(cfg, days)
-	exerciseRecs, _ := parseExerciseRecords(cfg, days)
-	timeRecs, _ := parseTimeRecords(cfg, days)
+	w := cfg.queryWindow()
+
+	sleepRecs, errSleep := parseSleepRecords(cfg, w)
+	stepRecs, errSteps := parseStepRecords(cfg, w)
+	heartRecs, errHeart := parseHeartRecords(cfg, w)
+	stressRecs, errStress := parseStressRecords(cfg, w)
+	exerciseRecs, errExercise := parseExerciseRecords(cfg, w)
+	timeRecs, errTime := parseTimeRecords(cfg, w)
+
+	for _, src := range []struct {
+		name string
+		err  error
+	}{
+		{"sleep", errSleep}, {"steps", errSteps}, {"heart", errHeart},
+		{"stress", errStress}, {"exercise", errExercise}, {"time", errTime},
+	} {
+		if src.err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s missing from this timeline — %v\n", src.name, src.err)
+		}
+	}
 
 	return buildTimeline(stepRecs, sleepRecs, heartRecs, stressRecs, exerciseRecs, timeRecs), nil
 }

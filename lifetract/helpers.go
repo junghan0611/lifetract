@@ -55,6 +55,25 @@ func dayWindow(t time.Time) Window {
 	return Window{From: start, To: start.AddDate(0, 0, 1)}
 }
 
+// allTime is every record the source holds. It is what a lookup by Denote ID
+// needs: the row it wants may sit anywhere in the history.
+func allTime() Window {
+	return Window{
+		From: time.Date(1970, 1, 1, 0, 0, 0, 0, KST),
+		To:   startOfDay(nowKST()).AddDate(0, 0, 1),
+	}
+}
+
+// contains reports whether t falls in the half-open window [From, To).
+//
+// The CSV readers used to apply the lower bound only — a cutoff N days back, with
+// nothing above it. In DB mode `--from 2026-07-01 --to 2026-07-03` meant those
+// three days; in CSV mode the same command silently answered with today's rows.
+// One CLI, one contract: the window decides, whichever source is behind it.
+func (w Window) contains(t time.Time) bool {
+	return !t.Before(w.From) && t.Before(w.To)
+}
+
 // shealthBounds renders the window as Samsung Health wall-clock strings, the
 // form those tables store start_time in.
 func (w Window) shealthBounds() (string, string) {

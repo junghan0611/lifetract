@@ -48,16 +48,11 @@ func csvReadDay(cfg *Config, day time.Time) (interface{}, error) {
 	dateS := dateStr(day)
 	dayID := denoteDayID(dateS)
 
-	origDays := cfg.Days
-	cfg.Days = 9999
-
-	sleepRecs, _ := parseSleepRecords(cfg, cfg.Days)
-	stepRecs, _ := parseStepRecords(cfg, cfg.Days)
-	heartRecs, _ := parseHeartRecords(cfg, cfg.Days)
-	stressRecs, _ := parseStressRecords(cfg, cfg.Days)
-	exerciseRecs, _ := parseExerciseRecords(cfg, cfg.Days)
-
-	cfg.Days = origDays
+	sleepRecs, _ := parseSleepRecords(cfg, allTime())
+	stepRecs, _ := parseStepRecords(cfg, allTime())
+	heartRecs, _ := parseHeartRecords(cfg, allTime())
+	stressRecs, _ := parseStressRecords(cfg, allTime())
+	exerciseRecs, _ := parseExerciseRecords(cfg, allTime())
 
 	entry := &TimelineEntry{ID: dayID, Date: dateS}
 
@@ -123,25 +118,18 @@ func csvReadDay(cfg *Config, day time.Time) (interface{}, error) {
 
 // csvReadEvent finds a specific event by exact Denote ID (CSV mode).
 func csvReadEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
-	origDays := cfg.Days
-	cfg.Days = 9999
-
-	sleepRecs, _ := parseSleepRecords(cfg, cfg.Days)
+	sleepRecs, _ := parseSleepRecords(cfg, allTime())
 	for _, r := range sleepRecs {
 		if r.ID == id {
-			cfg.Days = origDays
 			return r, nil
 		}
 	}
 
-	exerciseRecs, _ := parseExerciseRecords(cfg, cfg.Days)
+	exerciseRecs, _ := parseExerciseRecords(cfg, allTime())
 	for _, r := range exerciseRecs {
 		if r.ID == id {
-			cfg.Days = origDays
 			return r, nil
 		}
 	}
-
-	cfg.Days = origDays
 	return nil, fmt.Errorf("no event found for ID %s", id)
 }
