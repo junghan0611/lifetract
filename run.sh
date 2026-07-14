@@ -2,9 +2,11 @@
 # run.sh — lifetract 프로젝트 메인 진입점
 #
 # Usage:
-#   ./run.sh build [INSTALL_DIR]   — Build lifetract + install + copy skill
+#   ./run.sh build [INSTALL_DIR]   — Build lifetract + install
+#   ./run.sh deploy                — build + 스킬 자리에 바이너리·SKILL.md 세트 반영
 #   ./run.sh test                  — Run all tests
 #   ./run.sh bench                 — Run benchmarks
+#   ./run.sh update                — 덤프 배치 + DB 재빌드 (잃으면 exit 1)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +18,49 @@ case "${1:-}" in
         mkdir -p "$INSTALL_DIR"
         (cd "$SCRIPT_DIR/lifetract" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/lifetract" .)
         echo "Installed: $INSTALL_DIR/lifetract"
-        echo "Skill docs: https://github.com/junghan0611/pi-skills/tree/main/lifetract"
+        echo "스킬 자리에도 반영하려면: ./run.sh deploy"
+        ;;
+    deploy)
+        # 스킬 자리는 **바이너리 + SKILL.md 가 한 세트**다. 둘이 따로 움직이면
+        # 에이전트는 없는 기능을 모르거나, 있는 계약을 어긴다.
+        #
+        # 2026-07-14 에 실제로 그랬다: 바이너리만 손으로 복사해 오는 동안 SKILL.md 는
+        # 5-26 자에서 멈춰 있었다. 코드는 KST 고정 · 반개방 창 · stale 신고를 지키는데,
+        # 에이전트가 읽는 문서에는 --from/--to 도 시간 계약도 통째로 없었다.
+        # 지켜지는 줄 아무도 모르는 계약은 없는 계약이다. 그래서 복사를 손에서 뺀다.
+        BIN_DIR="${LIFETRACT_BIN_DIR:-$HOME/.local/bin}"
+        SKILL_DIRS=(
+            "$HOME/.claude/skills/lifetract"
+            "$HOME/repos/gh/agent-config/skills/lifetract"
+        )
+
+        echo "🔨 build → $BIN_DIR"
+        mkdir -p "$BIN_DIR"
+        (cd "$SCRIPT_DIR/lifetract" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$BIN_DIR/lifetract" .)
+
+        for d in "${SKILL_DIRS[@]}"; do
+            if [ ! -d "$d" ]; then
+                echo "⚠️  스킬 자리 없음 (스킵): $d"
+                continue
+            fi
+            cp "$BIN_DIR/lifetract" "$d/lifetract"
+            cp "$SCRIPT_DIR/SKILL.md" "$d/SKILL.md"
+            echo "✅ $d ← lifetract + SKILL.md"
+        done
+
+        # 세트가 맞는지 눈으로 확인한다. 조용히 어긋나는 게 이 스크립트가 고치는 병이다.
+        echo ""
+        echo "🔍 세트 확인:"
+        for d in "$BIN_DIR" "${SKILL_DIRS[@]}"; do
+            [ -f "$d/lifetract" ] || continue
+            printf '   %s  %s\n' "$(md5sum "$d/lifetract" | cut -c1-8)" "$d/lifetract"
+        done
+        for d in "$SCRIPT_DIR" "${SKILL_DIRS[@]}"; do
+            [ -f "$d/SKILL.md" ] || continue
+            printf '   %s  %s\n' "$(md5sum "$d/SKILL.md" | cut -c1-8)" "$d/SKILL.md"
+        done
+        echo ""
+        echo "   agent-config 의 SKILL.md 는 git 추적 대상이다 — 커밋은 GLG 가 한다."
         ;;
     test)
         echo "Running tests..."
@@ -88,10 +132,23 @@ case "${1:-}" in
         if [ -x "$LIFETRACT" ]; then
             echo ""
             echo "🔨 lifetract import --exec ..."
-            "$LIFETRACT" import --exec
+            IMPORT_OUT=$("$LIFETRACT" import --exec)
+            echo "$IMPORT_OUT"
             echo ""
             echo "📊 lifetract status:"
             "$LIFETRACT" status
+
+            # import 가 스트림을 잃었으면 여기서 멈춘다 (AGENTS.md §3.5 5항).
+            # DB 는 만들어졌지만 성공이 아니다 — 조용히 다음 줄로 넘어가는 것이
+            # 2026-07-14 에 stress 27,598 행을 죽인 채로 배포할 뻔한 그 침묵이다.
+            if printf '%s' "$IMPORT_OUT" | grep -q '"status": "warning"'; then
+                echo ""
+                echo "❌ import 가 스트림을 잃었다:"
+                printf '%s' "$IMPORT_OUT" | grep -E '^\s+"[a-z_]+: ' || true
+                echo ""
+                echo "   DB 는 만들어졌지만 믿지 마라. export zip 이 온전한지 먼저 봐라."
+                exit 1
+            fi
         else
             echo "⚠️  lifetract 바이너리 없음: $LIFETRACT"
             echo "   ./run.sh build 후 다시 시도하세요"
@@ -103,9 +160,11 @@ lifetract — Life tracking CLI for AI agents
 
 Usage:
   ./run.sh build [DIR]   Build lifetract, install to DIR (default: ./lifetract/)
+  ./run.sh deploy        build + 스킬 두 자리에 바이너리·SKILL.md 세트로 반영
   ./run.sh test          Run all tests
   ./run.sh bench         Run benchmarks
-  ./run.sh update        날짜 폴더(YYYYMMDD)에서 데이터 배치 + DB 재빌드
+  ./run.sh update        Syncthing 덤프에서 데이터 배치 + DB 재빌드
+                         (import 가 스트림을 잃으면 exit 1)
 EOF
         ;;
     *)
