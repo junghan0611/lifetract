@@ -294,6 +294,89 @@ func TestHalfOpenWindowTiles(t *testing.T) {
 //
 // This asserts on the marshalled output of every query path, so adding the column
 // to any SELECT fails here rather than in a published artifact.
+// --days is not decoration. It used to be dropped the instant either bound
+// appeared, so `--days 3 --to 2026-07-01` answered with 1,701 days and still
+// called itself three. A *plausible* wrong number is worse than an obviously
+// wrong one: nobody double-checks it, and it lands in a journal as fact.
+func TestDaysCombinesWithBounds(t *testing.T) {
+	day := func(s string) time.Time {
+		t.Helper()
+		d, err := time.ParseInLocation("2006-01-02", s, KST)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	tomorrow := startOfDay(nowKST()).AddDate(0, 0, 1)
+
+	tests := []struct {
+		name     string
+		flags    map[string]string
+		from, to time.Time
+	}{
+		{"days+to = N days ending at T",
+			map[string]string{"days": "3", "to": "2026-07-01"},
+			day("2026-06-28"), day("2026-07-01")},
+		{"days+from = N days starting at F",
+			map[string]string{"days": "3", "from": "2026-06-28"},
+			day("2026-06-28"), day("2026-07-01")},
+		{"from+to = exactly that window",
+			map[string]string{"from": "2026-06-28", "to": "2026-07-01"},
+			day("2026-06-28"), day("2026-07-01")},
+		{"from alone runs through today",
+			map[string]string{"from": "2026-06-28"},
+			day("2026-06-28"), tomorrow},
+		{"to alone leaves the floor open, by design",
+			map[string]string{"to": "2026-07-01"},
+			day("1970-01-01"), day("2026-07-01")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, err := flagRange(tt.flags)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !w.From.Equal(tt.from) || !w.To.Equal(tt.to) {
+				t.Errorf("window = [%s, %s), want [%s, %s)",
+					w.From.Format("2006-01-02"), w.To.Format("2006-01-02"),
+					tt.from.Format("2006-01-02"), tt.to.Format("2006-01-02"))
+			}
+		})
+	}
+}
+
+// A flag that is accepted and then ignored is a lie the tool tells quietly.
+// Each of these used to be swallowed: the caller asked one question and was
+// handed the answer to another, with nothing marking the substitution.
+func TestIgnoredFlagsAreRefused(t *testing.T) {
+	tests := []struct {
+		name  string
+		flags map[string]string
+	}{
+		// Right today only because the caller's arithmetic happens to match
+		// ours. A contract that depends on that luck is not a contract.
+		{"overspecified", map[string]string{"days": "3", "from": "2026-06-28", "to": "2026-07-01"}},
+		{"unparsable from", map[string]string{"from": "garbage"}},
+		{"unparsable to", map[string]string{"to": "2026-13-99"}},
+		{"days is not a number", map[string]string{"days": "three", "to": "2026-07-01"}},
+		{"backwards window", map[string]string{"from": "2026-07-01", "to": "2026-06-28"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := flagRange(tt.flags); err == nil {
+				t.Errorf("flagRange(%v) = nil error — silently ignored", tt.flags)
+			}
+		})
+	}
+
+	// --days alone carries no bounds, so its check lives one level up.
+	if _, err := newConfig(map[string]string{"days": "three"}); err == nil {
+		t.Error("newConfig(--days three) = nil error — it used to quietly answer 7 days")
+	}
+}
+
 func TestCommentNeverEscapes(t *testing.T) {
 	cfg := atlFixture(t)
 	const secret = "김가족 이름 평문" // seeded into the fixture's sleep block

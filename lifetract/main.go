@@ -72,7 +72,12 @@ func main() {
 	// Parse flags and positional args
 	args := os.Args[2:]
 	flags := parseFlags(args)
-	cfg := newConfig(flags)
+	cfg, err := newConfig(flags)
+	if err != nil {
+		errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
+		fmt.Fprintln(os.Stderr, string(errJSON))
+		os.Exit(1)
+	}
 
 	// Extract positional arg (for read command)
 	if len(args) > 0 && !strings.HasPrefix(args[0], "--") {
@@ -85,7 +90,6 @@ func main() {
 	}
 
 	var result interface{}
-	var err error
 
 	switch cmd {
 	case "status":
