@@ -87,9 +87,44 @@ stress 27,598 → 0 을 잡은 건 테스트가 아니라 *사람 눈에 띈 총
   (`tool_sha256` / `tool_vcs_revision` / `tool_vcs_modified`) 추가. `code_sha256` 은
   collector 파일 하나만 고정하므로 **어느 lifetract 바이너리로 뽑았는지 snapshot 에
   안 남는다.** 첫 public projection 전에 닫아야 한다. deploy 가 그 세 값을 출력한다.
-- **`agent-config/skills/lifetract/SKILL.md` 커밋** — 작업 트리에 갱신된 채 대기 (GLG 판단).
 - **프루닝 안 함** (검산 발견 3) — 의도. 오래된 run 을 자르면 죽은 스트림의 마지막 비영
   행수가 날아가고, 그게 경고를 계속 울리는 근거다. 잊는 원장은 침묵이다.
+
+## 🔶 커밋 대기 — 빈 것과 배포면 (2026-07-14, agent-config 검수건)
+
+agent-config 매니저가 스킬 면을 검수하며 결함 둘 + GLG 결정 하나를 보냈다. 셋 다 닫았다.
+**SKILL.md 수정은 agent-config 작업 트리에 남겨뒀다 — 커밋은 그쪽 매니저가 한다.**
+
+- [x] **빈 창이 `null` 이었다** — `exercise --days 30` 이 `null` 을 내서
+      `for x in json.loads(out)` 이 `TypeError` 로 죽었다. **영(零)을 구멍으로 내보내면
+      "운동을 안 했다"와 "도구가 깨졌다"가 구별되지 않는다.** 출력 직전 한 관문
+      (`main.go:emptyList`)에서 nil 슬라이스를 `[]` 로 막는다 — 커맨드마다 막으면 다음
+      커맨드가 또 뚫는다. `time` 의 `{"hint":…}` 맵도 배열로 통일하고, staleness 신호는
+      **stderr** 로 살렸다. DB 가 없으면 `[]` 가 아니라 **에러 + exit 1** — "안 썼다"와
+      "못 봤다"는 같은 모양으로 나가면 안 된다.
+- [x] **`warnings` 가 omitempty 라 비면 키째 사라졌다** — 문서가 보여주는 `"warnings": []`
+      가 **나올 수 없는 출력**이었고, 계약 4항의 jq 는 `null` 을 받았다. omitempty 를 빼고
+      **non-nil 초기화까지** 했다 (omitempty 만 빼면 `"warnings": null` 이라 병이 그대로다).
+      `candidate_path` 의 omitempty 는 유지 — 그 부재는 "승격됨"을 실어 나른다.
+- [x] **스킬 면을 `run.sh deploy` 에서 뺐다** (GLG 결정) — SSOT 는
+      `agent-config/skills/lifetract/SKILL.md` 하나. 리포의 SKILL.md 삭제, 배포는
+      `~/.local/bin` 한 자리만. 뿌리: `~/.claude/skills` 자체가 agent-config/skills 로 걸린
+      **심링크**라 옛 `SKILL_DIRS` 두 항목은 같은 디렉토리였다 — **"세 자리 SHA256 일치"가
+      한 자리를 두 번 세고 있었다.** 하필 "검사가 검사인 척하는 것"을 죽이려던 물건이.
+      provenance 가드(dirty 거부 · `vcs.revision == HEAD` · `vcs.modified == false`)는 유지.
+- 검증: 90개 통과, vet·race 초록, TZ 3개(UTC/KST/NY) 동일 해시. 실 데이터로 6개 커맨드
+  전부 python 루프 통과.
+
+### 검수 중 나온 별건 (안 고침 — 판단 필요)
+
+- **`--days` 가 `--to` 앞에서 조용히 무시된다.** `--days 3/30/3000 --to 2026-07-01` 이
+  전부 같은 3,114 행. `flagRange` 가 `--from` 없으면 하한을 1970-01-01 로 열기 때문
+  (`config.go:46`, 의도된 설계). 그런데 **`--days N --to X` 를 N일 창으로 읽는 것이
+  자연스러운 기대**라 조용한 무시는 함정이다. 셋 중 하나: (a) `--from` 없을 때 `--days`
+  를 하한으로 쓴다, (b) 조합을 거부한다, (c) 문서에 못박는다.
+- **센티널 타임스탬프 14행** — `heart_rate` 에 1970-01-01(13행) · 2000-01-01(1행).
+  Samsung export 산 쓰레기 값이고, 하한이 열린 질의에 그대로 딸려 나온다
+  (2017년부터의 나머지 64,541행은 정상 이력). import 에서 걸러낼지 판단 필요.
 
 ## ✅ 닫힘 — 시간 계약 (2026-07-14, 푸시·배포 완료)
 
