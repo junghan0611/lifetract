@@ -240,7 +240,7 @@ lifetract ha history sleep_duration --days 7   # 7일치 state 변화 (HA record
 
 ## 시간 계약 (Time Contract)
 
-에이전트가 이 CLI 의 숫자를 저널·노트에 **사실로 기록**하기 전에 알아야 할 넷.
+에이전트가 이 CLI 의 숫자를 저널·노트에 **사실로 기록**하기 전에 알아야 할 다섯.
 전문·근거는 [AGENTS.md §3.5](AGENTS.md), 강제는 `lifetract/timeaxis_test.go`.
 
 **1. 모든 날짜는 KST 고정.** 호출한 셸의 `$TZ` 가 답을 바꾸지 못한다.
@@ -260,18 +260,27 @@ lifetract time --from 2026-07-01 --to 2026-07-08   # 7일 (7/1 ~ 7/7)
 **3. 블록은 시작일에 귀속.** 수면 `21:14 → 05:48` 은 전부 시작한 날의 것.
 자정을 넘어도 쪼개지 않는다.
 
-**4. 낡음도 잃음도 스스로 신고한다.** 숫자를 믿기 전에 봐라:
+**4. 낡음은 스스로 신고한다.** 숫자를 믿기 전에 봐라:
 
 ```bash
-lifetract status | jq '.database | {last_time_block, stale_days, warnings}'  # 낡음
-lifetract import --exec | jq '{status, warnings}'                            # 잃음
+lifetract status | jq '.database | {last_time_block, stale_days, warnings}'
 ```
 
-`status` 의 `warnings` 가 비어 있지 않으면 **폰 export 가 멈춘 것**이고,
-`import` 의 `status` 가 `ok` 가 아니면 **스트림 하나가 죽은 것**이다.
+`warnings` 가 비어 있지 않으면 **폰 export 가 멈춘 것**이다. **적은 숫자가 나오는 게
+"그날 아무것도 안 했다"는 뜻이 아니다.**
 
-**적은 숫자가 나오는 게 "그날 아무것도 안 했다"는 뜻이 아니다.** 도구가 조용하다고
-데이터가 온전한 것도 아니었다 — 그래서 이제 도구가 먼저 말한다.
+**5. 잃음도 스스로 신고하고, 잃은 DB 는 승격되지 않는다.**
+
+```bash
+lifetract import --exec | jq '{status, warnings, candidate_path}'
+```
+
+`status` 가 `ok` 가 아니면 스트림 하나가 죽은 것이다. 그리고 그때 **운영 DB 는 그대로
+남는다** — import 는 후보(`lifetract.db.candidate`)에 짓고 성한 run 만 원자적으로
+갈아끼운다. `candidate_path` 가 있으면 그 run 은 **승격되지 않았고**, 조회는 여전히
+직전의 성한 DB 를 읽는다. 잃었다고 말하면서 잃은 DB 를 넘겨주면 그 경고는 묘비명이다.
+
+**도구가 조용하다고 데이터가 온전한 것이 아니었다** — 그래서 이제 도구가 먼저 말한다.
 
 ## Denote ID 체계
 
@@ -291,22 +300,24 @@ denotecli search "20251004"
 
 같은 Denote ID 축 → 두 CLI의 결과를 날짜로 조인 가능.
 
-## Data Coverage (DB snapshot 2026-05-19, Samsung CSV → 2026-05-18)
+## Data Coverage (DB snapshot 2026-07-14, Samsung CSV → 2026-07-13)
 
 | Source | Period | Rows |
 |--------|--------|------|
-| Samsung Health sleep | 2017-03 ~ 2026-05 | 4,638 |
-| Samsung Health sleep_stage | 2017-03 ~ 2026-05 | 82,357 |
-| Samsung Health heart rate | 2017-05 ~ 2026-05 | 63,575 |
-| Samsung Health steps_daily | 2017-03 ~ 2026-05 | 3,330 (3,324 dates) |
-| Samsung Health stress | 2017-03 ~ 2026-05 | 26,775 |
-| Samsung Health exercise | 2017-03 ~ 2026-05 | 2,199 |
-| Samsung Health weight | — | 284 |
+| Samsung Health sleep | 2017-03 ~ 2026-07 | 4,737 |
+| Samsung Health sleep_stage | 2017-03 ~ 2026-07 | 85,103 |
+| Samsung Health heart rate | 2017-05 ~ 2026-07 | 64,555 |
+| Samsung Health steps_daily | 2017-03 ~ 2026-07 | 3,387 |
+| Samsung Health stress | 2017-03 ~ 2026-07 | 27,598 |
+| Samsung Health exercise | 2017-03 ~ 2026-07 | 2,199 |
+| Samsung Health weight | — | 285 |
 | Samsung Health HRV | 2017 ~ 2025 | 1,058 (S26 이후 0건) |
-| aTimeLogger | 2021-10 ~ 2026-05 | 14,331 intervals (18 categories) |
+| aTimeLogger | 2021-10 ~ 2026-07 | 14,617 intervals (18 categories) |
 | Home Assistant REST | live (recorder 30일 보관) | 24 sensor (phase 7 read-only fallback 활성) |
 
-CSV/SQLite 기반 DB 는 **2026-05-18** 까지 (한달치 수면/심박 등 정량 질의 가능). Samsung CSV 가 본 SSOT, 주기 덤프로 갱신. 5/17 이후 라이브는 `ha` 커맨드 + `today`/`read <오늘>` 의 자동 HA fallback 으로 — 두 source 가 5/17 자리에서 겹쳐 시간축 단절 없음. Phase 7 후반부 (HA→DB lazy upsert) 는 시급성 낮음 (read-only fallback 이 사용자 가시 자리는 다 채움).
+합계 **203,539 rows**. **이 표는 손으로 관리하는 낡는 숫자다** — 믿기 전에 `lifetract status`
+를 봐라 (`stale_days`, `warnings`). Samsung CSV 가 본 SSOT 이고 사람이 폰에서 주기적으로
+내보내야 흐른다. 오늘 자리 라이브는 `ha` 커맨드 + `today`/`read <오늘>` 의 자동 HA fallback.
 
 ## Related Skills
 
