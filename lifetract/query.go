@@ -1,8 +1,11 @@
 package main
 
 import (
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // --- status ---
@@ -32,6 +35,39 @@ type DBStatus struct {
 	Available bool    `json:"available"`
 	SizeMB    float64 `json:"size_mb,omitempty"`
 	Mode      string  `json:"mode"` // "db" or "csv"
+
+	// Freshness. Staleness must announce itself: the aTimeLogger depth once sat
+	// two months behind because the phone export had stalled, and nothing here
+	// said so — every query just quietly returned less.
+	//
+	// Every stream is checked, not just the one that failed last time. The two
+	// feeds arrive by different routes (aTimeLogger via database.db3, Samsung via
+	// the CSV export) and stall independently.
+	LastTimeBlock string   `json:"last_time_block,omitempty"`
+	LastSleep     string   `json:"last_sleep,omitempty"`
+	LastSteps     string   `json:"last_steps,omitempty"`
+	StaleDays     int      `json:"stale_days,omitempty"` // worst stream
+	Warnings      []string `json:"warnings,omitempty"`
+}
+
+// staleAfterDays is how far a stream may lag today before status calls it stale.
+// Records land daily, so a multi-day gap means the import pipeline stopped, not
+// that nothing happened.
+const staleAfterDays = 3
+
+// dbLastDate runs a query returning a single date string, or "" if unavailable.
+func dbLastDate(cfg *Config, query string) string {
+	db, err := openDB(dbPath(cfg))
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+
+	var date sql.NullString
+	if err := db.QueryRow(query).Scan(&date); err != nil {
+		return ""
+	}
+	return date.String
 }
 
 func cmdStatus(cfg *Config) (interface{}, error) {
@@ -52,6 +88,7 @@ func cmdStatus(cfg *Config) (interface{}, error) {
 		dbSt.Available = true
 		dbSt.SizeMB = float64(info.Size()) / (1024 * 1024)
 		dbSt.Mode = "db"
+		addDBFreshness(cfg, dbSt)
 	} else {
 		dbSt.Mode = "csv"
 	}
@@ -61,6 +98,47 @@ func cmdStatus(cfg *Config) (interface{}, error) {
 		ATimeLogger:   &atl,
 		Database:      dbSt,
 	}, nil
+}
+
+// addDBFreshness reports how current each stream is and warns about any that has
+// fallen behind. A stream is checked even if the others are healthy — that is the
+// whole point: the Samsung export can stall while aTimeLogger keeps flowing, and
+// a check that only watched the feed that broke last time would miss it.
+func addDBFreshness(cfg *Config, st *DBStatus) {
+	st.LastTimeBlock = dbLastDate(cfg,
+		`SELECT DATE(MAX(start_time), 'unixepoch', '+9 hours') FROM atl_interval WHERE is_deleted = 0`)
+	st.LastSleep = dbLastDate(cfg, `SELECT DATE(MAX(start_time)) FROM sleep`)
+	st.LastSteps = dbLastDate(cfg, `SELECT MAX(date) FROM steps_daily`)
+
+	streams := []struct {
+		name, last, remedy string
+	}{
+		{"aTimeLogger", st.LastTimeBlock, "copy a fresh database.db3 from the phone, then 'lifetract import --exec'"},
+		{"Samsung sleep", st.LastSleep, "re-export Samsung Health from the phone, then 'lifetract import --exec'"},
+		{"Samsung steps", st.LastSteps, "re-export Samsung Health from the phone, then 'lifetract import --exec'"},
+	}
+
+	today := startOfDay(nowKST())
+	for _, s := range streams {
+		if s.last == "" {
+			st.Warnings = append(st.Warnings,
+				fmt.Sprintf("%s: no records in DB — has 'lifetract import --exec' ever run?", s.name))
+			continue
+		}
+		last, err := time.ParseInLocation("2006-01-02", s.last, KST)
+		if err != nil {
+			continue
+		}
+		behind := int(today.Sub(last).Hours() / 24)
+		if behind > st.StaleDays {
+			st.StaleDays = behind
+		}
+		if behind >= staleAfterDays {
+			st.Warnings = append(st.Warnings, fmt.Sprintf(
+				"%s is %d days behind (newest %s) — the export has stalled; %s",
+				s.name, behind, s.last, s.remedy))
+		}
+	}
 }
 
 func getATimeLoggerStatus(cfg *Config) ATimeLoggerStatus {
@@ -99,19 +177,19 @@ func cmdToday(cfg *Config) (interface{}, error) {
 
 	if dbExists(cfg) {
 		result.Source = "db"
-		if steps, err := dbQuerySteps(cfg, 1); err == nil && len(steps) > 0 {
+		if steps, err := dbQuerySteps(cfg, daysWindow(1)); err == nil && len(steps) > 0 {
 			result.Steps = steps[0].Steps
 		}
-		if sleeps, err := dbQuerySleep(cfg, 2); err == nil && len(sleeps) > 0 {
+		if sleeps, err := dbQuerySleep(cfg, daysWindow(2)); err == nil && len(sleeps) > 0 {
 			result.SleepHours = sleeps[0].DurationHours
 		}
-		if hearts, err := dbQueryHeart(cfg, 1); err == nil && len(hearts) > 0 {
+		if hearts, err := dbQueryHeart(cfg, daysWindow(1)); err == nil && len(hearts) > 0 {
 			result.AvgHR = hearts[0].AvgHR
 		}
-		if stresses, err := dbQueryStress(cfg, 1); err == nil && len(stresses) > 0 {
+		if stresses, err := dbQueryStress(cfg, daysWindow(1)); err == nil && len(stresses) > 0 {
 			result.StressAvg = stresses[0].AvgScore
 		}
-		if times, err := dbQueryTime(cfg, 1); err == nil && len(times) > 0 {
+		if times, err := dbQueryTime(cfg, daysWindow(1)); err == nil && len(times) > 0 {
 			result.TimeCategories = times[0].Categories
 		}
 	} else {
@@ -142,7 +220,7 @@ func cmdSleep(cfg *Config) (interface{}, error) {
 	var err error
 
 	if dbExists(cfg) {
-		records, err = dbQuerySleep(cfg, cfg.Days)
+		records, err = dbQuerySleep(cfg, cfg.queryWindow())
 	} else {
 		records, err = parseSleepRecords(cfg, cfg.Days)
 	}
@@ -205,40 +283,47 @@ func sleepSummary(records []SleepRecord) *SleepSummary {
 
 func cmdSteps(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
-		return dbQuerySteps(cfg, cfg.Days)
+		return dbQuerySteps(cfg, cfg.queryWindow())
 	}
 	return parseStepRecords(cfg, cfg.Days)
 }
 
 func cmdHeart(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
-		return dbQueryHeart(cfg, cfg.Days)
+		return dbQueryHeart(cfg, cfg.queryWindow())
 	}
 	return parseHeartRecords(cfg, cfg.Days)
 }
 
 func cmdStress(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
-		return dbQueryStress(cfg, cfg.Days)
+		return dbQueryStress(cfg, cfg.queryWindow())
 	}
 	return parseStressRecords(cfg, cfg.Days)
 }
 
 func cmdExercise(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
-		return dbQueryExercise(cfg, cfg.Days)
+		return dbQueryExercise(cfg, cfg.queryWindow())
 	}
 	return parseExerciseRecords(cfg, cfg.Days)
 }
 
 func cmdTime(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
-		records, err := dbQueryTime(cfg, cfg.Days)
+		records, err := dbQueryTime(cfg, cfg.queryWindow())
 		if err != nil {
 			return nil, err
 		}
 		if len(records) == 0 {
-			return map[string]string{"note": "no aTimeLogger data in DB for the given period"}, nil
+			// An empty window is not the same as an empty dataset. Say which one
+			// this is, so a stale import cannot pass for "you did nothing".
+			note := map[string]string{"note": "no aTimeLogger data in DB for the requested window"}
+			if last := dbLastDate(cfg, "SELECT DATE(MAX(start_time), 'unixepoch', '+9 hours') FROM atl_interval WHERE is_deleted = 0"); last != "" {
+				note["last_block"] = last
+				note["hint"] = "DB holds blocks only through " + last + " — run 'lifetract import --exec' if the phone export is newer"
+			}
+			return note, nil
 		}
 		return records, nil
 	}

@@ -24,7 +24,7 @@ func TestDBQueryAfterImport(t *testing.T) {
 
 	// Now test queries
 	t.Run("sleep", func(t *testing.T) {
-		records, err := dbQuerySleep(cfg, 9999)
+		records, err := dbQuerySleep(cfg, daysWindow(9999))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -42,7 +42,7 @@ func TestDBQueryAfterImport(t *testing.T) {
 	})
 
 	t.Run("steps", func(t *testing.T) {
-		records, err := dbQuerySteps(cfg, 9999)
+		records, err := dbQuerySteps(cfg, daysWindow(9999))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -57,7 +57,7 @@ func TestDBQueryAfterImport(t *testing.T) {
 	})
 
 	t.Run("heart", func(t *testing.T) {
-		records, err := dbQueryHeart(cfg, 9999)
+		records, err := dbQueryHeart(cfg, daysWindow(9999))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,7 +72,7 @@ func TestDBQueryAfterImport(t *testing.T) {
 	})
 
 	t.Run("stress", func(t *testing.T) {
-		records, err := dbQueryStress(cfg, 9999)
+		records, err := dbQueryStress(cfg, daysWindow(9999))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +82,7 @@ func TestDBQueryAfterImport(t *testing.T) {
 	})
 
 	t.Run("exercise", func(t *testing.T) {
-		records, err := dbQueryExercise(cfg, 9999)
+		records, err := dbQueryExercise(cfg, daysWindow(9999))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +97,7 @@ func TestDBQueryAfterImport(t *testing.T) {
 	})
 
 	t.Run("timeline", func(t *testing.T) {
-		entries, err := dbQueryTimeline(cfg, 9999)
+		entries, err := dbQueryTimeline(cfg, daysWindow(9999))
 		if err != nil {
 			t.Fatal(err)
 		}

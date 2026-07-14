@@ -37,7 +37,7 @@ type ExerciseBrief struct {
 
 func cmdTimeline(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
-		return dbQueryTimeline(cfg, cfg.Days)
+		return dbQueryTimeline(cfg, cfg.queryWindow())
 	}
 	return csvTimeline(cfg)
 }

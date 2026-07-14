@@ -4,19 +4,62 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 )
 
 // Config holds runtime configuration.
 type Config struct {
-	DataDir        string   // self-tracking-data root
-	ShealthDir     string   // Primary Samsung Health CSV export directory (latest)
-	ShealthDirs    []string // All Samsung Health export directories (for merge mode)
-	ATimeLoggerDB  string   // aTimeLogger SQLite path
-	Days           int
-	Summary        bool
-	Category       string
-	ReadID         string   // Denote ID for read command
-	Exec           bool     // Execute mode (for import)
+	DataDir       string   // self-tracking-data root
+	ShealthDir    string   // Primary Samsung Health CSV export directory (latest)
+	ShealthDirs   []string // All Samsung Health export directories (for merge mode)
+	ATimeLoggerDB string   // aTimeLogger SQLite path
+	Days          int
+	Range         *Window // explicit --from/--to; overrides Days when set
+	Summary       bool
+	Category      string
+	ReadID        string // Denote ID for read command
+	Exec          bool   // Execute mode (for import)
+}
+
+// queryWindow is the window range commands cover: an explicit --from/--to when
+// given, otherwise the --days N window. Explicit ranges are what make a query
+// reproducible — a relative window answers a different question every day.
+func (c *Config) queryWindow() Window {
+	if c.Range != nil {
+		return *c.Range
+	}
+	return daysWindow(c.Days)
+}
+
+// flagRange builds the explicit window from --from/--to. The interval is
+// half-open: --from 2026-07-01 --to 2026-07-14 covers July 1 through 13.
+// Either bound may be omitted; the missing side is left open-ended.
+func flagRange(flags map[string]string) *Window {
+	fromS, hasFrom := flags["from"]
+	toS, hasTo := flags["to"]
+	if !hasFrom && !hasTo {
+		return nil
+	}
+
+	w := Window{
+		From: time.Date(1970, 1, 1, 0, 0, 0, 0, KST),
+		To:   startOfDay(nowKST()).AddDate(0, 0, 1),
+	}
+	if hasFrom {
+		t, err := time.ParseInLocation("2006-01-02", fromS, KST)
+		if err != nil {
+			return nil
+		}
+		w.From = t
+	}
+	if hasTo {
+		t, err := time.ParseInLocation("2006-01-02", toS, KST)
+		if err != nil {
+			return nil
+		}
+		w.To = t
+	}
+	return &w
 }
 
 func newConfig(flags map[string]string) *Config {
@@ -41,13 +84,14 @@ func newConfig(flags map[string]string) *Config {
 	}
 
 	cfg := &Config{
-		DataDir:        dataDir,
-		ShealthDir:     shealthDir,
-		ShealthDirs:    shealthDirs,
-		ATimeLoggerDB:  filepath.Join(dataDir, "atimelogger", "database.db3"),
-		Days:           flagDays(flags),
-		Summary:        flags["summary"] == "true",
-		Category:       flags["category"],
+		DataDir:       dataDir,
+		ShealthDir:    shealthDir,
+		ShealthDirs:   shealthDirs,
+		ATimeLoggerDB: filepath.Join(dataDir, "atimelogger", "database.db3"),
+		Days:          flagDays(flags),
+		Range:         flagRange(flags),
+		Summary:       flags["summary"] == "true",
+		Category:      flags["category"],
 	}
 	return cfg
 }

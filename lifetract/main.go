@@ -33,9 +33,20 @@ Commands:
 
 Flags:
   --days N               Days to look back (default: 7)
+  --from YYYY-MM-DD      Window start, inclusive
+  --to   YYYY-MM-DD      Window end, EXCLUSIVE — overrides --days
   --data-dir DIR         Data directory (default: ~/repos/gh/self-tracking-data)
   --summary              Summary/aggregated mode
   --category CAT         Filter time category
+
+Time contract:
+  All dates are KST (fixed +09:00). The answer never depends on the caller's $TZ.
+  Windows are half-open [from, to): --from 2026-07-01 --to 2026-07-08 is 7 days,
+  Jul 1 through Jul 7. Adjacent windows tile without overlap.
+  A block is attributed to the day it STARTS on: sleep 21:14 → 05:48 is all the
+  earlier day.
+  Use --from/--to for anything that must be reproducible; --days is relative to
+  today and so answers a different question tomorrow.
 
 All output is JSON.
 `, version)

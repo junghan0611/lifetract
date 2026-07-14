@@ -9,18 +9,19 @@ import (
 )
 
 // dbQuerySleep returns sleep records from DB.
-func dbQuerySleep(cfg *Config, days int) ([]SleepRecord, error) {
+func dbQuerySleep(cfg *Config, w Window) ([]SleepRecord, error) {
 	db, err := openDB(dbPath(cfg))
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	cutoff := cutoffTime(days).Format("2006-01-02 15:04:05.000")
+	from, to := w.shealthBounds()
 	rows, err := db.Query(`
 		SELECT id, uuid, start_time, end_time, duration_min,
 		       sleep_score, efficiency, total_light_min, total_rem_min
-		FROM sleep WHERE start_time >= ? ORDER BY start_time DESC`, cutoff)
+		FROM sleep WHERE start_time >= ? AND start_time < ?
+		ORDER BY start_time DESC`, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -112,18 +113,18 @@ func dbLoadSleepStages(db *sql.DB) map[string]*SleepStages {
 }
 
 // dbQuerySteps returns daily step records from DB.
-func dbQuerySteps(cfg *Config, days int) ([]StepRecord, error) {
+func dbQuerySteps(cfg *Config, w Window) ([]StepRecord, error) {
 	db, err := openDB(dbPath(cfg))
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	cutoff := cutoffTime(days).Format("2006-01-02")
+	from, to := w.dateBounds()
 	rows, err := db.Query(`
 		SELECT date, SUM(count) as total
-		FROM steps_daily WHERE date >= ?
-		GROUP BY date ORDER BY date DESC`, cutoff)
+		FROM steps_daily WHERE date >= ? AND date < ?
+		GROUP BY date ORDER BY date DESC`, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -146,14 +147,14 @@ func dbQuerySteps(cfg *Config, days int) ([]StepRecord, error) {
 }
 
 // dbQueryHeart returns daily heart rate records from DB.
-func dbQueryHeart(cfg *Config, days int) ([]HeartRecord, error) {
+func dbQueryHeart(cfg *Config, w Window) ([]HeartRecord, error) {
 	db, err := openDB(dbPath(cfg))
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	cutoff := cutoffTime(days).Format("2006-01-02 15:04:05.000")
+	from, to := w.shealthBounds()
 	rows, err := db.Query(`
 		SELECT DATE(start_time) as date,
 		       ROUND(AVG(heart_rate), 1),
@@ -161,8 +162,8 @@ func dbQueryHeart(cfg *Config, days int) ([]HeartRecord, error) {
 		       CAST(MAX(heart_rate) AS INTEGER),
 		       COUNT(*)
 		FROM heart_rate
-		WHERE start_time >= ? AND heart_rate > 0
-		GROUP BY date ORDER BY date DESC`, cutoff)
+		WHERE start_time >= ? AND start_time < ? AND heart_rate > 0
+		GROUP BY date ORDER BY date DESC`, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -179,14 +180,14 @@ func dbQueryHeart(cfg *Config, days int) ([]HeartRecord, error) {
 }
 
 // dbQueryStress returns daily stress records from DB.
-func dbQueryStress(cfg *Config, days int) ([]StressRecord, error) {
+func dbQueryStress(cfg *Config, w Window) ([]StressRecord, error) {
 	db, err := openDB(dbPath(cfg))
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	cutoff := cutoffTime(days).Format("2006-01-02 15:04:05.000")
+	from, to := w.shealthBounds()
 	rows, err := db.Query(`
 		SELECT DATE(start_time) as date,
 		       ROUND(AVG(score), 1),
@@ -194,8 +195,8 @@ func dbQueryStress(cfg *Config, days int) ([]StressRecord, error) {
 		       CAST(MAX(score) AS INTEGER),
 		       COUNT(*)
 		FROM stress
-		WHERE start_time >= ? AND score >= 0
-		GROUP BY date ORDER BY date DESC`, cutoff)
+		WHERE start_time >= ? AND start_time < ? AND score >= 0
+		GROUP BY date ORDER BY date DESC`, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -212,19 +213,19 @@ func dbQueryStress(cfg *Config, days int) ([]StressRecord, error) {
 }
 
 // dbQueryExercise returns exercise records from DB.
-func dbQueryExercise(cfg *Config, days int) ([]ExerciseRecord, error) {
+func dbQueryExercise(cfg *Config, w Window) ([]ExerciseRecord, error) {
 	db, err := openDB(dbPath(cfg))
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	cutoff := cutoffTime(days).Format("2006-01-02 15:04:05.000")
+	from, to := w.shealthBounds()
 	rows, err := db.Query(`
 		SELECT id, start_time, exercise_type, duration_ms, calorie, mean_hr, max_hr
 		FROM exercise
-		WHERE start_time >= ?
-		ORDER BY start_time DESC`, cutoff)
+		WHERE start_time >= ? AND start_time < ?
+		ORDER BY start_time DESC`, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -274,25 +275,35 @@ func dbQueryExercise(cfg *Config, days int) ([]ExerciseRecord, error) {
 }
 
 // dbQueryTime returns time tracking records from DB (aTimeLogger).
-func dbQueryTime(cfg *Config, days int) ([]TimeRecord, error) {
+//
+// A block is attributed to the day it STARTS on, so a sleep block running
+// 21:14 → 05:48 belongs entirely to the earlier day. 12% of blocks cross
+// midnight, so this is the common case, not an edge case. Callers depend on it.
+//
+// The day is derived by shifting the stored epoch onto the KST axis (+9h), never
+// by SQLite's 'localtime' modifier — that reads the invoking shell's $TZ and
+// would silently re-bucket a day's blocks depending on who called us.
+//
+// comment is never selected here, and must never be: those blocks carry family
+// names in plain text. The DB holds them; this CLI is the only door out, so the
+// door is where the contract lives. See TestCommentNeverEscapes.
+func dbQueryTime(cfg *Config, w Window) ([]TimeRecord, error) {
 	db, err := openDB(dbPath(cfg))
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	cutoff := cutoffTime(days)
-	cutoffEpoch := cutoff.Unix()
-
+	from, to := w.epochBounds()
 	rows, err := db.Query(`
 		SELECT c.name,
-		       DATE(i.start_time, 'unixepoch', 'localtime') as date,
+		       DATE(i.start_time, 'unixepoch', '+9 hours') as date,
 		       SUM(i.end_time - i.start_time) / 60.0 as minutes
 		FROM atl_interval i
 		JOIN atl_category c ON i.category_id = c.id
-		WHERE i.is_deleted = 0 AND i.start_time >= ?
+		WHERE i.is_deleted = 0 AND i.start_time >= ? AND i.start_time < ?
 		GROUP BY date, c.name
-		ORDER BY date DESC, minutes DESC`, cutoffEpoch)
+		ORDER BY date DESC, minutes DESC`, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -326,13 +337,13 @@ func dbQueryTime(cfg *Config, days int) ([]TimeRecord, error) {
 }
 
 // dbQueryTimeline returns timeline entries from DB.
-func dbQueryTimeline(cfg *Config, days int) ([]TimelineEntry, error) {
-	steps, _ := dbQuerySteps(cfg, days)
-	sleeps, _ := dbQuerySleep(cfg, days)
-	hearts, _ := dbQueryHeart(cfg, days)
-	stresses, _ := dbQueryStress(cfg, days)
-	exercises, _ := dbQueryExercise(cfg, days)
-	times, _ := dbQueryTime(cfg, days)
+func dbQueryTimeline(cfg *Config, w Window) ([]TimelineEntry, error) {
+	steps, _ := dbQuerySteps(cfg, w)
+	sleeps, _ := dbQuerySleep(cfg, w)
+	hearts, _ := dbQueryHeart(cfg, w)
+	stresses, _ := dbQueryStress(cfg, w)
+	exercises, _ := dbQueryExercise(cfg, w)
+	times, _ := dbQueryTime(cfg, w)
 
 	return buildTimeline(steps, sleeps, hearts, stresses, exercises, times), nil
 }
@@ -342,18 +353,13 @@ func dbQueryDay(cfg *Config, day time.Time) (interface{}, error) {
 	dateS := dateStr(day)
 	dayID := denoteDayID(dateS)
 
-	// Query everything for ±1 day
-	origDays := cfg.Days
-	cfg.Days = int(time.Since(day).Hours()/24) + 2
-
-	steps, _ := dbQuerySteps(cfg, cfg.Days)
-	sleeps, _ := dbQuerySleep(cfg, cfg.Days)
-	hearts, _ := dbQueryHeart(cfg, cfg.Days)
-	stresses, _ := dbQueryStress(cfg, cfg.Days)
-	exercises, _ := dbQueryExercise(cfg, cfg.Days)
-	times, _ := dbQueryTime(cfg, cfg.Days)
-
-	cfg.Days = origDays
+	w := dayWindow(day)
+	steps, _ := dbQuerySteps(cfg, w)
+	sleeps, _ := dbQuerySleep(cfg, w)
+	hearts, _ := dbQueryHeart(cfg, w)
+	stresses, _ := dbQueryStress(cfg, w)
+	exercises, _ := dbQueryExercise(cfg, w)
+	times, _ := dbQueryTime(cfg, w)
 
 	entry := &TimelineEntry{ID: dayID, Date: dateS}
 

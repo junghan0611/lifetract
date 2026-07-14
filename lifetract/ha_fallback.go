@@ -36,9 +36,18 @@ func dialHAFallback() *HAClient {
 	return c
 }
 
-// haFloatStateForKind fetches the current numeric state of the first
-// registered entity for a Kind. Returns (0,false) on any failure or
-// unknown/unavailable state.
+// haFloatStateForKind fetches the current numeric state of the first registered
+// entity for a Kind, but only if that state actually describes today.
+//
+// A sensor that stops reporting does not raise an error — GetState keeps handing back
+// the last value it ever saw, forever. The phone's heart_rate sensor froze at 112
+// on 2026-07-03 and lifetract went on stamping "112" into the journal as today's
+// fact for eleven days. A stale live reading is worse than a missing one: the
+// journal is permanent, and a later reader cannot tell the difference.
+//
+// So the state must have changed today, on the KST axis. These sensors describe
+// today (today's steps, a reading taken today); if none arrived today, we do not
+// have the value, and saying nothing is the honest answer.
 func haFloatStateForKind(c *HAClient, kind EntityKind) (float64, bool) {
 	es, ok := EntitiesByKind[kind]
 	if !ok || len(es) == 0 {
@@ -48,7 +57,60 @@ func haFloatStateForKind(c *HAClient, kind EntityKind) (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
+	if !isToday(dateStr(s.LastChanged)) {
+		return 0, false
+	}
 	return s.FloatValue()
+}
+
+// haTodayAvgHR averages every heart rate HA recorded today, on the KST axis.
+//
+// The current state is a single instantaneous reading — it is not an average, and
+// it must not be poured into a field called avg_hr just because the types line up.
+// The DB path computes AVG(heart_rate) across the day; the live path has to mean
+// the same thing or the two sources silently disagree.
+//
+// History replays the state as it stood at the window's start, so a sensor that
+// died weeks ago still appears inside today's window — and HA stamps that
+// replayed row with the window start, not with when the value was really last
+// set. The frozen 112 came back dated 00:00 today, which is why a "is it older
+// than midnight?" test waved it through.
+//
+// So a sample counts only if it changed strictly AFTER the window opened. That
+// holds whichever timestamp HA reports: a replay clamped to the boundary fails
+// it, and so does a true timestamp from July. A dead sensor then yields no
+// samples at all, which is the honest answer — rather than its last gasp, or an
+// average contaminated by a value carried over from a previous day.
+func haTodayAvgHR(c *HAClient) (float64, bool) {
+	es, ok := EntitiesByKind[KindHeartRate]
+	if !ok || len(es) == 0 {
+		return 0, false
+	}
+
+	now := nowKST()
+	start := startOfDay(now)
+	states, err := c.GetHistory(es[0].EntityID, start, now)
+	if err != nil {
+		return 0, false
+	}
+
+	var sum float64
+	var n int
+	for _, s := range states {
+		if !s.LastChanged.After(start) {
+			continue // replayed from the boundary: not a reading taken today
+		}
+		v, ok := s.FloatValue()
+		if !ok || v <= 0 {
+			continue
+		}
+		sum += v
+		n++
+	}
+	if n == 0 {
+		return 0, false
+	}
+	return round1(sum / float64(n)), true
 }
 
 // sleepEndLocalDay returns the local calendar day (YYYY-MM-DD) a sleep_duration
@@ -64,7 +126,9 @@ func sleepEndLocalDay(s HAState) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return t.Local().Format("2006-01-02"), true
+	// HA returns a real instant with a zone; attribute it on the KST axis, not
+	// on whatever zone the calling shell happens to be in.
+	return t.In(KST).Format("2006-01-02"), true
 }
 
 // haRecentSleepMinutes returns today's HA sleep minutes (main sleep + naps).
@@ -84,7 +148,7 @@ func haRecentSleepMinutes(c *HAClient) (float64, bool) {
 	if !ok || len(es) == 0 {
 		return 0, false
 	}
-	now := time.Now()
+	now := nowKST()
 	states, err := c.GetHistory(es[0].EntityID, now.AddDate(0, 0, -2), now)
 	if err != nil {
 		return 0, false
@@ -142,12 +206,12 @@ func todaySleepStale(cfg *Config, today *TodayResult) bool {
 	if !dbExists(cfg) {
 		return false
 	}
-	sleeps, err := dbQuerySleep(cfg, 2)
+	sleeps, err := dbQuerySleep(cfg, daysWindow(2))
 	if err != nil || len(sleeps) == 0 {
 		return false
 	}
 	latest := sleeps[0].Date
-	now := time.Now()
+	now := nowKST()
 	todayS := now.Format("2006-01-02")
 	yesterdayS := now.AddDate(0, 0, -1).Format("2006-01-02")
 	return latest != todayS && latest != yesterdayS
@@ -176,7 +240,7 @@ func enrichTodayFromHAClient(cfg *Config, today *TodayResult, c *HAClient) {
 		}
 	}
 	if today.AvgHR == 0 {
-		if v, ok := haFloatStateForKind(c, KindHeartRate); ok && v > 0 {
+		if v, ok := haTodayAvgHR(c); ok && v > 0 {
 			today.AvgHR = v
 			used = append(used, "heart_rate")
 		}
@@ -215,8 +279,8 @@ func enrichTimelineEntryFromHAClient(cfg *Config, entry *TimelineEntry, c *HACli
 	if h != nil && h.SleepHours > 0 {
 		// Mirror todaySleepStale's logic without round-tripping TodayResult.
 		if dbExists(cfg) {
-			if sleeps, err := dbQuerySleep(cfg, 2); err == nil && len(sleeps) > 0 {
-				now := time.Now()
+			if sleeps, err := dbQuerySleep(cfg, daysWindow(2)); err == nil && len(sleeps) > 0 {
+				now := nowKST()
 				todayS := now.Format("2006-01-02")
 				yesterdayS := now.AddDate(0, 0, -1).Format("2006-01-02")
 				if sleeps[0].Date != todayS && sleeps[0].Date != yesterdayS {
@@ -242,7 +306,7 @@ func enrichTimelineEntryFromHAClient(cfg *Config, entry *TimelineEntry, c *HACli
 
 	needHR := h == nil || h.AvgHR == 0
 	if needHR {
-		if v, ok := haFloatStateForKind(c, KindHeartRate); ok && v > 0 {
+		if v, ok := haTodayAvgHR(c); ok && v > 0 {
 			if h == nil {
 				h = &HealthMetrics{}
 				entry.Health = h
@@ -269,8 +333,7 @@ func enrichTimelineEntryFromHAClient(cfg *Config, entry *TimelineEntry, c *HACli
 	}
 }
 
-// isToday returns true when the given date string matches today's date in
-// the local timezone.
+// isToday returns true when the given date string is today on the KST axis.
 func isToday(date string) bool {
-	return date == time.Now().Format("2006-01-02")
+	return date == nowKST().Format("2006-01-02")
 }

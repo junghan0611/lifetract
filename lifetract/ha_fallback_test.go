@@ -51,12 +51,13 @@ func TestEnrichTodayFillsGapsFromHA(t *testing.T) {
 				"entity_id":"sensor.sm_s942n_s26_glgman_daily_steps",
 				"state":"4771","attributes":{"unit_of_measurement":"steps"},
 				"last_changed":%q,"last_updated":%q}`, now, now),
-			"/api/states/sensor.sm_s942n_s26_glgman_heart_rate": fmt.Sprintf(`{
-				"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate",
-				"state":"127","attributes":{"unit_of_measurement":"bpm"},
-				"last_changed":%q,"last_updated":%q}`, now, now),
 		},
 		map[string]string{
+			// avg_hr is an average: 120 and 134 taken today average to 127.
+			"sensor.sm_s942n_s26_glgman_heart_rate": fmt.Sprintf(`[[
+				{"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate","state":"120","attributes":{"unit_of_measurement":"bpm"},"last_changed":%q,"last_updated":%q},
+				{"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate","state":"134","attributes":{"unit_of_measurement":"bpm"},"last_changed":%q,"last_updated":%q}
+			]]`, now, now, now, now),
 			"sensor.sm_s942n_s26_glgman_sleep_duration": fmt.Sprintf(`[[
 				{"entity_id":"sensor.sm_s942n_s26_glgman_sleep_duration","state":"104","attributes":{"unit_of_measurement":"min"},"last_changed":%q,"last_updated":%q},
 				{"entity_id":"sensor.sm_s942n_s26_glgman_sleep_duration","state":"185","attributes":{"unit_of_measurement":"min"},"last_changed":%q,"last_updated":%q}
@@ -98,13 +99,13 @@ func TestEnrichTodaySkipsFilledFields(t *testing.T) {
 	c := mockHAFallback(t,
 		// Only register sleep + heart endpoints. Steps endpoint is NOT registered
 		// → if enrich tries to hit it, the mock returns 404 and the path is skipped.
+		map[string]string{},
 		map[string]string{
-			"/api/states/sensor.sm_s942n_s26_glgman_heart_rate": fmt.Sprintf(`{
-				"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate",
-				"state":"80","attributes":{"unit_of_measurement":"bpm"},
-				"last_changed":%q,"last_updated":%q}`, now, now),
-		},
-		map[string]string{
+			// 75 and 85 taken today average to 80.
+			"sensor.sm_s942n_s26_glgman_heart_rate": fmt.Sprintf(`[[
+				{"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate","state":"75","attributes":{"unit_of_measurement":"bpm"},"last_changed":%q,"last_updated":%q},
+				{"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate","state":"85","attributes":{"unit_of_measurement":"bpm"},"last_changed":%q,"last_updated":%q}
+			]]`, now, now, now, now),
 			"sensor.sm_s942n_s26_glgman_sleep_duration": `[[]]`,
 		},
 	)
@@ -113,9 +114,9 @@ func TestEnrichTodaySkipsFilledFields(t *testing.T) {
 	result := &TodayResult{
 		Date:       time.Now().Format("2006-01-02"),
 		Source:     "db",
-		Steps:      9999,    // already set → no HA
-		SleepHours: 7.5,     // already set → no HA (and not stale: no DB)
-		AvgHR:      0,       // gap → HA fills
+		Steps:      9999, // already set → no HA
+		SleepHours: 7.5,  // already set → no HA (and not stale: no DB)
+		AvgHR:      0,    // gap → HA fills
 	}
 
 	enrichTodayFromHAClient(cfg, result, c)
@@ -277,12 +278,13 @@ func TestEnrichTimelineEntryFillsHealthFromHA(t *testing.T) {
 				"entity_id":"sensor.sm_s942n_s26_glgman_daily_steps",
 				"state":"3210","attributes":{"unit_of_measurement":"steps"},
 				"last_changed":%q,"last_updated":%q}`, now, now),
-			"/api/states/sensor.sm_s942n_s26_glgman_heart_rate": fmt.Sprintf(`{
-				"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate",
-				"state":"68","attributes":{"unit_of_measurement":"bpm"},
-				"last_changed":%q,"last_updated":%q}`, now, now),
 		},
 		map[string]string{
+			// 64 and 72 taken today average to 68.
+			"sensor.sm_s942n_s26_glgman_heart_rate": fmt.Sprintf(`[[
+				{"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate","state":"64","attributes":{"unit_of_measurement":"bpm"},"last_changed":%q,"last_updated":%q},
+				{"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate","state":"72","attributes":{"unit_of_measurement":"bpm"},"last_changed":%q,"last_updated":%q}
+			]]`, now, now, now, now),
 			"sensor.sm_s942n_s26_glgman_sleep_duration": fmt.Sprintf(`[[
 				{"entity_id":"sensor.sm_s942n_s26_glgman_sleep_duration","state":"420","attributes":{"unit_of_measurement":"min"},"last_changed":%q,"last_updated":%q}
 			]]`, now, now),
@@ -322,5 +324,101 @@ func TestIsToday(t *testing.T) {
 	}
 	if isToday("2020-01-01") {
 		t.Error("isToday(2020-01-01) should be false")
+	}
+}
+
+// --- Live-axis staleness (2026-07-14) ---
+//
+// The DB is not the only place staleness hides. HA's GetState never fails on a
+// dead sensor: it keeps returning the last value it ever saw. The phone's
+// heart_rate sensor froze at 112 on 2026-07-03, and for eleven days lifetract
+// handed that number to punchout, which wrote it into the journal as that day's
+// fact. Nothing raised an error; the number was simply wrong, every day, forever.
+//
+// A stale live reading is worse than a missing one. The journal is permanent.
+
+// TestStuckSensorIsNotTodaysFact pins the guard: a sensor that has not reported
+// today has no value for today, and lifetract must say nothing rather than repeat
+// its last gasp.
+func TestStuckSensorIsNotTodaysFact(t *testing.T) {
+	frozen := time.Now().AddDate(0, 0, -11).UTC().Format("2006-01-02T15:04:05Z07:00")
+	// What HA stamps on the replayed row: the start of the requested window.
+	windowStart := startOfDay(nowKST()).UTC().Format("2006-01-02T15:04:05Z07:00")
+
+	c := mockHAFallback(t,
+		map[string]string{
+			// Exactly the real failure: 112 bpm, last changed eleven days ago.
+			"/api/states/sensor.sm_s942n_s26_glgman_heart_rate": fmt.Sprintf(`{
+				"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate",
+				"state":"112","attributes":{"unit_of_measurement":"bpm"},
+				"last_changed":%q,"last_updated":%q}`, frozen, frozen),
+			"/api/states/sensor.sm_s942n_s26_glgman_daily_steps": fmt.Sprintf(`{
+				"entity_id":"sensor.sm_s942n_s26_glgman_daily_steps",
+				"state":"9999","attributes":{"unit_of_measurement":"steps"},
+				"last_changed":%q,"last_updated":%q}`, frozen, frozen),
+		},
+		map[string]string{
+			// This is the shape real HA returns, and the reason the first version
+			// of this guard did nothing: history replays the frozen state inside
+			// today's window and stamps it with the WINDOW START, not with when
+			// the value was really last set. Against live HA the dead sensor came
+			// back dated 00:00 today. A mock that echoed the true July timestamp
+			// made the guard look like it worked. It did not.
+			"sensor.sm_s942n_s26_glgman_heart_rate": fmt.Sprintf(`[[
+				{"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate","state":"112","attributes":{"unit_of_measurement":"bpm"},"last_changed":%q,"last_updated":%q}
+			]]`, windowStart, windowStart),
+			"sensor.sm_s942n_s26_glgman_sleep_duration": `[[]]`,
+		},
+	)
+
+	cfg := &Config{DataDir: "testdata"}
+	result := &TodayResult{Date: time.Now().Format("2006-01-02"), Source: "db"}
+
+	enrichTodayFromHAClient(cfg, result, c)
+
+	if result.AvgHR != 0 {
+		t.Errorf("AvgHR = %v, want 0 — a sensor frozen 11 days ago says nothing about today", result.AvgHR)
+	}
+	if result.Steps != 0 {
+		t.Errorf("Steps = %d, want 0 — yesterday's step counter is not today's", result.Steps)
+	}
+	if len(result.HASources) != 0 {
+		t.Errorf("HASources = %v, want none: nothing was actually filled", result.HASources)
+	}
+	if result.Source != "db" {
+		t.Errorf("Source = %q, want %q — no HA value was used", result.Source, "db")
+	}
+}
+
+// TestAvgHRIsAnAverageNotTheLatestReading pins the other half. The field is named
+// avg_hr and the DB path computes AVG(heart_rate) across the day; the live path
+// has to mean the same thing. Pouring the current instantaneous reading into it
+// because the types line up is how the two sources start quietly disagreeing.
+func TestAvgHRIsAnAverageNotTheLatestReading(t *testing.T) {
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z07:00")
+	mk := func(v string) string {
+		return fmt.Sprintf(`{"entity_id":"sensor.sm_s942n_s26_glgman_heart_rate","state":%q,"attributes":{"unit_of_measurement":"bpm"},"last_changed":%q,"last_updated":%q}`, v, now, now)
+	}
+
+	c := mockHAFallback(t,
+		map[string]string{},
+		map[string]string{
+			// Three readings today. Mean 80; the latest is 100.
+			"sensor.sm_s942n_s26_glgman_heart_rate": "[[" +
+				mk("60") + "," + mk("80") + "," + mk("100") + "]]",
+			"sensor.sm_s942n_s26_glgman_sleep_duration": `[[]]`,
+		},
+	)
+
+	cfg := &Config{DataDir: "testdata"}
+	result := &TodayResult{Date: time.Now().Format("2006-01-02"), Source: "db"}
+
+	enrichTodayFromHAClient(cfg, result, c)
+
+	if result.AvgHR == 100 {
+		t.Fatal("AvgHR = 100 — that is the latest reading, not an average")
+	}
+	if result.AvgHR != 80 {
+		t.Errorf("AvgHR = %v, want 80 (mean of 60, 80, 100)", result.AvgHR)
 	}
 }
