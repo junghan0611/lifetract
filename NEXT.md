@@ -8,7 +8,8 @@
 
 - **Stem:** `timeline`은 DB를 직접 읽지 않고 lifetract 출력을 사실로 소비한다. 따라서
   *읽지 못함(hole)* 이 `[]`/0으로 바뀌는 경로가 하나라도 남으면 배포하지 않는다.
-- **Current:** `main` HEAD `2491c21` + 워킹트리(미커밋). **push 없음.**
+- **Current:** 코드 ship gate `b75e568` + 본 NEXT 핸드오프 커밋. `origin/main`보다 앞이며
+  **push 없음, 워킹트리 clean.**
   독립 검수에서 **여섯 자리를 더 찾아 닫았다** — 전임이 leaf/aggregator를 닫는 동안
   *숫자를 읽는 층*과 *스트림을 세는 층*이 열려 있었다.
 - **Verify (전부 통과):** 122 tests · vet · race · TZ UTC/KST/NY 동일 해시 ·
