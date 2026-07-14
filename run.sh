@@ -53,8 +53,10 @@ case "${1:-}" in
         (cd "$SCRIPT_DIR/lifetract" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$BIN_DIR/lifetract" .)
 
         # 바이너리가 스스로 무엇인지 말하게 한다 (go version -m).
-        BIN_REV=$(go version -m "$BIN_DIR/lifetract" | awk '$1=="build" && $2=="vcs.revision" {print $3}')
-        BIN_MOD=$(go version -m "$BIN_DIR/lifetract" | awk '$1=="build" && $2=="vcs.modified" {print $3}')
+        # go version -m 은 `build\tvcs.revision=<sha>` 처럼 key=value 를 한 필드로 준다.
+        BIN_INFO=$(go version -m "$BIN_DIR/lifetract")
+        BIN_REV=$(printf '%s' "$BIN_INFO" | sed -n 's/.*vcs\.revision=\([0-9a-f]*\).*/\1/p')
+        BIN_MOD=$(printf '%s' "$BIN_INFO" | sed -n 's/.*vcs\.modified=\([a-z]*\).*/\1/p')
         if [ "$BIN_REV" != "$HEAD_SHA" ] || [ "$BIN_MOD" != "false" ]; then
             echo "❌ 빌드가 HEAD 를 안 담았다: revision=${BIN_REV:0:12} modified=$BIN_MOD" >&2
             exit 1
