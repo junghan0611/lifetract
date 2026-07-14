@@ -22,8 +22,8 @@
   날짜 누락/초과/값 불일치 0 · `day_time_ms=0` 0 · UNIQUE index 확인.
 - **골든:** 2017-03-04=2,278 · 2025-07-16=6,335 · 07-17=7,685 ·
   07-20=909 · 2026-07-13=17,715 · 07-14=3,187.
-- **Next:** 새 기능(§A 새 sleep 파일군) 전에 **관측소 `junghan0611/timeline/collect.py`
-  provenance 연결**로 복귀 — 아래 "남은 것" 참조. **본 리포 작업이 아니다.**
+- **Next:** **§A 새 sleep 파일군 schema 확장.** (관측소 provenance 연결은 남은 일이 아니다 —
+  `e586e3c` 로 이미 닫혔고, 본 NEXT 가 그걸 모른 채 미결로 적고 있었다. 아래 ✅ 항목 참조.)
 - **Do not touch:** HRV는 은퇴 상태 유지. HA `KindHRV`는 별도 라이브 센서라 그대로 둔다.
 
 ## 이번 판에서 닫은 것 (독립 검수 발견)
@@ -161,13 +161,29 @@ stress 27,598 → 0 을 잡은 건 테스트가 아니라 *사람 눈에 띈 총
 
 ### 남은 것
 
-- **관측소 쪽 (내 리포 아님 — `~/repos/gh/junghan0611`)**: `timeline/collect.py` 의
-  manifest 에 lifetract fingerprint
-  (`tool_sha256` / `tool_vcs_revision` / `tool_vcs_modified`) 추가. `code_sha256` 은
-  collector 파일 하나만 고정하므로 **어느 lifetract 바이너리로 뽑았는지 snapshot 에
-  안 남는다.** 첫 public projection 전에 닫아야 한다. deploy 가 그 세 값을 출력한다.
 - **프루닝 안 함** (검산 발견 3) — 의도. 오래된 run 을 자르면 죽은 스트림의 마지막 비영
   행수가 날아가고, 그게 경고를 계속 울리는 근거다. 잊는 원장은 침묵이다.
+
+### ✅ 닫힘 — 관측소 manifest 의 깊이0 지문 (관측소 `e586e3c`, 2026-07-14)
+
+**이 자리는 관측소가 몇 시간 먼저 닫았고, 본 NEXT 가 그걸 모른 채 미결로 적고 있었다.**
+관측소 교차검산으로 잡힘 — 여기 적힌 "다음 걸음"이 남의 리포에서 이미 끝난 일이었다.
+
+`timeline/collect.py` 의 manifest 는 이미 깊이0 도구 지문을 나른다
+(`tool_provenance()`, `collect.py:893`): `repo` · `sha256` · `vcs_revision` · `src_tree`.
+`24f2ba1` 의 인용 계약(as_of + content_sha256 + code_sha256 + 소스 상태 + 깊이0 revision)에
+포함돼 있다. 본 리포에서 대조 확인:
+
+- 기록된 `src_tree=bbcc7d48…` = `git rev-parse dcdfa54:lifetract`. 그 소스에서 나온 게 맞다.
+- 배포 세 자리(`~/.claude/skills/` · `~/.local/bin/` · `~/.pi/…`) 전부 `sha256=59597db9…`
+  로 동일하고 기록과 같다.
+- `dcdfa54..HEAD` 는 NEXT/README/docs 만 건드려 `HEAD:lifetract` 트리가 여전히
+  `bbcc7d48…`. **기록이 HEAD 아닌 `dcdfa54` 를 가리키는 건 오류가 아니라 정확한 사실이다.**
+
+**`tool_vcs_modified` 는 일부러 없다** — `agent-config/run.sh` Gate 2 (`run.sh:294`) 가
+미커밋 소스 트리의 배포를 거부하므로 그 플래그는 구조적으로 `false` 외의 값을 가질 수 없다.
+적어봐야 소음이고, 대신 들어간 `src_tree` 가 boolean 보다 강하다 — *더러웠는지*가 아니라
+**어떤 소스 내용에서 빌드됐는지**를 못 박는다.
 
 ## ✅ 닫힘 — 빈 것과 배포면 (2026-07-14, agent-config 검수건)
 
