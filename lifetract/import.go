@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"os"
 	"time"
 )
@@ -55,19 +56,37 @@ func cmdImport(cfg *Config) (interface{}, error) {
 	}
 
 	if info, err := os.Stat(cfg.ATimeLoggerDB); err == nil {
+		rows := atlIntervalCount(cfg)
 		manifest.Sources = append(manifest.Sources, ImportSource{
 			Name:   "atimelogger",
 			Type:   "sqlite",
 			Path:   cfg.ATimeLoggerDB,
+			Rows:   rows,
 			SizeMB: float64(info.Size()) / (1024 * 1024),
-			Note:   "13,094 intervals, 18 categories",
 		})
+		manifest.TotalRows += rows
 	}
 
 	manifest.CategoryPolicy = defaultCategoryPolicy()
 	manifest.EstimatedDBSizeMB = 30
 
 	return manifest, nil
+}
+
+// atlIntervalCount counts what the aTimeLogger DB actually holds. The manifest
+// used to carry a hardcoded "13,094 intervals, 18 categories" — true once, then
+// quietly false (14,617 today, and nobody noticed the note aging). A dry run
+// exists to say what is there, so it has to look.
+func atlIntervalCount(cfg *Config) int {
+	db, err := sql.Open("sqlite", cfg.ATimeLoggerDB)
+	if err != nil {
+		return 0
+	}
+	defer db.Close()
+
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM time_interval2`).Scan(&n)
+	return n
 }
 
 type ImportManifest struct {
