@@ -42,12 +42,13 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	// One stamp, one id, for the whole run. Taken here, once — a clock read per
 	// row is a clock that ticks mid-import and splits one run into two.
 	result := &ImportResult{
-		DBPath:  path,
-		Status:  statusOK,
-		Tables:  []TableResult{},
-		StartAt: time.Now(),
-		runID:   base.nextRunID(),
-		runAt:   nowStamp(),
+		DBPath:   path,
+		Status:   statusOK,
+		Tables:   []TableResult{},
+		Warnings: []string{},
+		StartAt:  time.Now(),
+		runID:    base.nextRunID(),
+		runAt:    nowStamp(),
 	}
 	result.ImportID = result.runID
 	switch {
@@ -172,8 +173,12 @@ type ImportResult struct {
 	Status string `json:"status"` // "ok" | "warning"
 	// CandidatePath is set only when the run was NOT promoted: db_path still holds
 	// the previous, sound database, and this is the file that was built and rejected.
-	CandidatePath string        `json:"candidate_path,omitempty"`
-	Warnings      []string      `json:"warnings,omitempty"`
+	CandidatePath string `json:"candidate_path,omitempty"`
+	// Never omitempty, never nil — same reason as DBStatus.Warnings: [] says the
+	// run was examined and nothing was lost, an absent key says nothing at all.
+	// (CandidatePath above keeps omitempty on purpose: its absence carries the
+	// meaning "promoted".)
+	Warnings      []string      `json:"warnings"`
 	Note          string        `json:"note,omitempty"`
 	BaselineAt    string        `json:"baseline_at,omitempty"`
 	Tables        []TableResult `json:"tables"`

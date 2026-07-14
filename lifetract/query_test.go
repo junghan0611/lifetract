@@ -484,20 +484,74 @@ func TestCmdReadNoID(t *testing.T) {
 
 // --- SKILL.md: time (aTimeLogger stub) ---
 
-func TestCmdTime(t *testing.T) {
+// Without a DB, time cannot answer at all. It must fail — an empty list here
+// would report "you tracked no time" when the truth is "I could not look", and
+// those two must never share a shape.
+func TestCmdTimeWithoutDBFails(t *testing.T) {
 	cfg := testConfig(9999)
 	result, err := cmdTime(cfg)
+	if err == nil {
+		b, _ := json.Marshal(result)
+		t.Fatalf("time without a DB returned %s, want an error — a missing DB is not an empty result", b)
+	}
+}
+
+// --- the empty-window contract: zero is an answer, null is a hole ---
+
+// A quiet day must marshal to [], never null. An agent doing
+// `for x in json.loads(out)` cannot be made to tell an honest zero apart from a
+// broken tool, so no list command is allowed to hand it that choice.
+func TestEmptyWindowMarshalsAsEmptyList(t *testing.T) {
+	cmds := map[string]func(*Config) (interface{}, error){
+		"sleep":    cmdSleep,
+		"steps":    cmdSteps,
+		"heart":    cmdHeart,
+		"stress":   cmdStress,
+		"exercise": cmdExercise,
+		"timeline": cmdTimeline,
+	}
+
+	for name, fn := range cmds {
+		t.Run(name, func(t *testing.T) {
+			// testdata is fixed in the past, so a 1-day window holds nothing.
+			result, err := fn(testConfig(1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := json.Marshal(emptyList(result))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(out) != "[]" {
+				t.Errorf("%s on an empty window = %s, want []", name, out)
+			}
+		})
+	}
+}
+
+// status must always carry the warnings key, in every mode. A key that
+// disappears when the check passes is indistinguishable from an old binary that
+// never checked — [] is the positive claim "examined, nothing wrong".
+func TestStatusAlwaysCarriesWarnings(t *testing.T) {
+	result, err := cmdStatus(testConfig(7)) // csv mode: no DB in testdata
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Should return a map with error/note since DB doesn't exist in testdata
 	b, _ := json.Marshal(result)
-	var m map[string]interface{}
-	json.Unmarshal(b, &m)
+	var payload struct {
+		Database map[string]json.RawMessage `json:"database"`
+	}
+	if err := json.Unmarshal(b, &payload); err != nil {
+		t.Fatal(err)
+	}
 
-	if m["error"] == nil && m["note"] == nil {
-		t.Error("expected error or note for missing aTimeLogger DB")
+	raw, ok := payload.Database["warnings"]
+	if !ok {
+		t.Fatalf("status.database has no warnings key: %s", b)
+	}
+	if string(raw) == "null" {
+		t.Errorf("status.database.warnings = null, want [] — a hole is not a clean bill of health")
 	}
 }
 

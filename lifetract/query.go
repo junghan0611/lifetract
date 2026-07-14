@@ -43,11 +43,16 @@ type DBStatus struct {
 	// Every stream is checked, not just the one that failed last time. The two
 	// feeds arrive by different routes (aTimeLogger via database.db3, Samsung via
 	// the CSV export) and stall independently.
-	LastTimeBlock string   `json:"last_time_block,omitempty"`
-	LastSleep     string   `json:"last_sleep,omitempty"`
-	LastSteps     string   `json:"last_steps,omitempty"`
-	StaleDays     int      `json:"stale_days,omitempty"` // worst stream
-	Warnings      []string `json:"warnings,omitempty"`
+	LastTimeBlock string `json:"last_time_block,omitempty"`
+	LastSleep     string `json:"last_sleep,omitempty"`
+	LastSteps     string `json:"last_steps,omitempty"`
+	StaleDays     int    `json:"stale_days,omitempty"` // worst stream
+
+	// Never omitempty, never nil. A missing key cannot be told apart from an old
+	// binary that never checked; "warnings": [] is the positive claim that the
+	// streams were examined and found current. A check that can vanish when it
+	// passes is not a check.
+	Warnings []string `json:"warnings"`
 }
 
 // staleAfterDays is how far a stream may lag today before status calls it stale.
@@ -83,7 +88,7 @@ func cmdStatus(cfg *Config) (interface{}, error) {
 
 	atl := getATimeLoggerStatus(cfg)
 
-	dbSt := &DBStatus{Path: dbPath(cfg)}
+	dbSt := &DBStatus{Path: dbPath(cfg), Warnings: []string{}}
 	if info, err := os.Stat(dbPath(cfg)); err == nil {
 		dbSt.Available = true
 		dbSt.SizeMB = float64(info.Size()) / (1024 * 1024)
@@ -310,33 +315,30 @@ func cmdExercise(cfg *Config) (interface{}, error) {
 }
 
 func cmdTime(cfg *Config) (interface{}, error) {
-	if dbExists(cfg) {
-		records, err := dbQueryTime(cfg, cfg.queryWindow())
-		if err != nil {
-			return nil, err
+	// No DB is not an empty window: it means the question could not be asked. An
+	// empty list here would report "you tracked nothing" when the truth is "I
+	// could not look" — so this fails loudly instead of answering quietly.
+	if !dbExists(cfg) {
+		if status := getATimeLoggerStatus(cfg); !status.Available {
+			return nil, fmt.Errorf("aTimeLogger database not found at %s — cannot answer, this is not an empty result", cfg.ATimeLoggerDB)
 		}
-		if len(records) == 0 {
-			// An empty window is not the same as an empty dataset. Say which one
-			// this is, so a stale import cannot pass for "you did nothing".
-			note := map[string]string{"note": "no aTimeLogger data in DB for the requested window"}
-			if last := dbLastDate(cfg, "SELECT DATE(MAX(start_time), 'unixepoch', '+9 hours') FROM atl_interval WHERE is_deleted = 0"); last != "" {
-				note["last_block"] = last
-				note["hint"] = "DB holds blocks only through " + last + " — run 'lifetract import --exec' if the phone export is newer"
-			}
-			return note, nil
-		}
-		return records, nil
+		return nil, fmt.Errorf("aTimeLogger data not imported yet — run 'lifetract import --exec'; cannot answer, this is not an empty result")
 	}
 
-	status := getATimeLoggerStatus(cfg)
-	if !status.Available {
-		return map[string]string{
-			"error": "aTimeLogger database not found",
-			"path":  cfg.ATimeLoggerDB,
-		}, nil
+	records, err := dbQueryTime(cfg, cfg.queryWindow())
+	if err != nil {
+		return nil, err
 	}
 
-	return map[string]string{
-		"note": "run 'lifetract import --exec' first to enable DB queries",
-	}, nil
+	// An empty window is not the same as a stale import. stdout stays a list so a
+	// caller can always loop over it; the distinction is spoken on stderr, where
+	// it cannot be mistaken for a record.
+	if len(records) == 0 {
+		msg := "no aTimeLogger blocks in the requested window"
+		if last := dbLastDate(cfg, "SELECT DATE(MAX(start_time), 'unixepoch', '+9 hours') FROM atl_interval WHERE is_deleted = 0"); last != "" {
+			msg += fmt.Sprintf("; DB holds blocks only through %s — run 'lifetract import --exec' if the phone export is newer", last)
+		}
+		fmt.Fprintln(os.Stderr, "warning: "+msg)
+	}
+	return records, nil
 }

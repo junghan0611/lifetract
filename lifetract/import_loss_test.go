@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -287,6 +288,32 @@ func TestFirstImportIsNotAWarning(t *testing.T) {
 	}
 	if first.BaselineAt != "" {
 		t.Errorf("baseline_at = %q, want empty", first.BaselineAt)
+	}
+}
+
+// A clean run still has to show the warnings key. If it vanishes when empty, a
+// caller cannot tell "checked, nothing lost" from a binary too old to check —
+// and that is the same disease as a check that reports itself passing.
+func TestCleanImportStillCarriesWarnings(t *testing.T) {
+	cfg, _ := lossCfg(t)
+
+	result, err := execImport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b, _ := json.Marshal(result)
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, ok := m["warnings"]
+	if !ok {
+		t.Fatalf("a clean import dropped the warnings key: %s", b)
+	}
+	if string(raw) == "null" {
+		t.Errorf("warnings = null, want [] — absence must not pass for a clean run")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -133,12 +134,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	out, err := json.MarshalIndent(result, "", "  ")
+	out, err := json.MarshalIndent(emptyList(result), "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, `{"error": "json marshal: %s"}`, err)
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
+}
+
+// emptyList turns a nil slice into an empty one, so a quiet day marshals to []
+// rather than null. A caller looping over the result must not have to tell "you
+// logged no exercise" apart from "the tool broke" — zero is an answer, null is a
+// hole. Every list command funnels through here, so a new one cannot reopen it.
+func emptyList(v interface{}) interface{} {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Slice && rv.IsNil() {
+		return reflect.MakeSlice(rv.Type(), 0, 0).Interface()
+	}
+	return v
 }
 
 // parseFlags parses --key value pairs from args.
