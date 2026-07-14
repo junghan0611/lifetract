@@ -617,33 +617,6 @@ func TestUnreadableSourceIsNotOKEvenOnTheFirstImport(t *testing.T) {
 	}
 }
 
-// The stopgap is available, but it has to be asked for out loud, and the payload
-// says what it is. An operator bootstrapping from a partial export is a decision;
-// a tool making that decision on its own is the silence again.
-func TestPartialBootstrapMustBeAskedFor(t *testing.T) {
-	cfg, shealth := lossCfg(t)
-	cfg.AllowPartial = true
-
-	if err := os.Remove(filepath.Join(shealth, stressCSV)); err != nil {
-		t.Fatal(err)
-	}
-
-	first, err := execImport(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !dbExists(cfg) {
-		t.Fatal("--allow-partial did not promote the bootstrap import")
-	}
-	if !first.Partial {
-		t.Error("partial = false — a stopgap database must say that it is one")
-	}
-	if first.Status != statusWarn {
-		t.Errorf("status = %q, want warning — the missing stream is still missing", first.Status)
-	}
-}
-
 // A ledger that cannot be written is a baseline the next run will not have. The
 // run says so and is held back: promoting a DB whose record failed to write is how
 // a future import comes to believe it is the first one.

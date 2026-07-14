@@ -105,9 +105,6 @@ func main() {
 	if flags["exec"] == "true" {
 		cfg.Exec = true
 	}
-	if flags["allow-partial"] == "true" {
-		cfg.AllowPartial = true
-	}
 
 	var result interface{}
 
@@ -187,7 +184,7 @@ func emptyList(v interface{}) interface{} {
 // Every flag the CLI understands. A flag not in here is a typo, and a typo has to
 // be told, not absorbed.
 var (
-	boolFlags  = map[string]bool{"summary": true, "exec": true, "allow-partial": true}
+	boolFlags  = map[string]bool{"summary": true, "exec": true}
 	valueFlags = map[string]bool{
 		"days": true, "from": true, "to": true,
 		"category": true, "data-dir": true, "shealth-dir": true,
@@ -211,8 +208,8 @@ var commandFlags = map[string]map[string]bool{
 	"heart":    {"days": true, "from": true, "to": true},
 	"stress":   {"days": true, "from": true, "to": true},
 	"exercise": {"days": true, "from": true, "to": true},
-	"time":     {"days": true, "from": true, "to": true, "category": true, "summary": true},
-	"import":   {"exec": true, "allow-partial": true},
+	"time":     {"days": true, "from": true, "to": true, "category": true},
+	"import":   {"exec": true},
 	"export":   {},
 	"ha":       {},
 }

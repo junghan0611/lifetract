@@ -391,13 +391,37 @@ func dbQueryTime(cfg *Config, w Window) ([]TimeRecord, error) {
 }
 
 // dbQueryTimeline returns timeline entries from DB.
+// dbQueryTimeline assembles the day view from six streams.
+//
+// Every one of those calls used to end in `_`. Drop a table and the timeline still
+// came back, one stream short, shaped exactly like a stretch of quiet days — and
+// the collector downstream would have written that hole into the record as a zero.
+// A stream that cannot answer fails the command: a hole is not a zero.
 func dbQueryTimeline(cfg *Config, w Window) ([]TimelineEntry, error) {
-	steps, _ := dbQuerySteps(cfg, w)
-	sleeps, _ := dbQuerySleep(cfg, w)
-	hearts, _ := dbQueryHeart(cfg, w)
-	stresses, _ := dbQueryStress(cfg, w)
-	exercises, _ := dbQueryExercise(cfg, w)
-	times, _ := dbQueryTime(cfg, w)
+	steps, err := dbQuerySteps(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("steps: %w", err)
+	}
+	sleeps, err := dbQuerySleep(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("sleep: %w", err)
+	}
+	hearts, err := dbQueryHeart(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("heart: %w", err)
+	}
+	stresses, err := dbQueryStress(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("stress: %w", err)
+	}
+	exercises, err := dbQueryExercise(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("exercise: %w", err)
+	}
+	times, err := dbQueryTime(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("time: %w", err)
+	}
 
 	return buildTimeline(steps, sleeps, hearts, stresses, exercises, times), nil
 }
@@ -408,12 +432,30 @@ func dbQueryDay(cfg *Config, day time.Time) (interface{}, error) {
 	dayID := denoteDayID(dateS)
 
 	w := dayWindow(day)
-	steps, _ := dbQuerySteps(cfg, w)
-	sleeps, _ := dbQuerySleep(cfg, w)
-	hearts, _ := dbQueryHeart(cfg, w)
-	stresses, _ := dbQueryStress(cfg, w)
-	exercises, _ := dbQueryExercise(cfg, w)
-	times, _ := dbQueryTime(cfg, w)
+	steps, err := dbQuerySteps(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("steps: %w", err)
+	}
+	sleeps, err := dbQuerySleep(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("sleep: %w", err)
+	}
+	hearts, err := dbQueryHeart(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("heart: %w", err)
+	}
+	stresses, err := dbQueryStress(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("stress: %w", err)
+	}
+	exercises, err := dbQueryExercise(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("exercise: %w", err)
+	}
+	times, err := dbQueryTime(cfg, w)
+	if err != nil {
+		return nil, fmt.Errorf("time: %w", err)
+	}
 
 	entry := &TimelineEntry{ID: dayID, Date: dateS}
 
@@ -507,6 +549,12 @@ func dbQueryEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
 		sleep_score, efficiency, total_light_min, total_rem_min
 		FROM sleep WHERE id = ?`, id).Scan(
 		&sid, &uuid, &startStr, &endStr, &durMin, &score, &eff, &lightMin, &remMin)
+	// Only "this table does not have it" moves on to the next kind. Any other
+	// error is the table failing to answer, and turning that into "no event found"
+	// is the tool reporting an absence it never established.
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("sleep: %w", err)
+	}
 	if err == nil {
 		start, _ := parseShealthTime(startStr)
 		end, _ := parseShealthTime(endStr)
@@ -540,6 +588,9 @@ func dbQueryEvent(cfg *Config, t time.Time, id string) (interface{}, error) {
 	err = db.QueryRow(`SELECT id, start_time, exercise_type, duration_ms, calorie, mean_hr, max_hr
 		FROM exercise WHERE id = ?`, id).Scan(
 		&eid, &eStartStr, &exType, &eDurMs, &cal, &meanHR, &maxHR)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("exercise: %w", err)
+	}
 	if err == nil {
 		start, _ := parseShealthTime(eStartStr)
 		durMin := float64(eDurMs.Int64) / 60000.0

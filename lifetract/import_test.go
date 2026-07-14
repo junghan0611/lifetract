@@ -13,10 +13,9 @@ func TestExecImport(t *testing.T) {
 		DataDir:       tmpDir,
 		ShealthDir:    "testdata/samsunghealth",
 		ShealthDirs:   []string{"testdata/samsunghealth"},
-		ATimeLoggerDB: "testdata/nonexistent.db3", // will fail gracefully
+		ATimeLoggerDB: fakeATL(t, filepath.Join(tmpDir, "atimelogger", "database.db3")),
 		Days:          9999,
 		Exec:          true,
-		AllowPartial:  true, // deliberate partial bootstrap: no aTimeLogger fixture
 	}
 
 	result, err := execImport(cfg)

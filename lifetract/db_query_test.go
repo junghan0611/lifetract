@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -8,15 +9,14 @@ import (
 func TestDBQueryAfterImport(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &Config{
-		DataDir:       tmpDir,
-		ShealthDir:    "testdata/samsunghealth",
-		ShealthDirs:   []string{"testdata/samsunghealth"},
-		ATimeLoggerDB: "testdata/nonexistent.db3",
+		DataDir:     tmpDir,
+		ShealthDir:  "testdata/samsunghealth",
+		ShealthDirs: []string{"testdata/samsunghealth"},
+		// A complete aTimeLogger fixture. An import missing a stream is not
+		// promoted any more, so a DB test needs a sound import to have a DB at all.
+		ATimeLoggerDB: fakeATL(t, filepath.Join(tmpDir, "atimelogger", "database.db3")),
 		Days:          9999,
 		Exec:          true,
-		// No aTimeLogger here on purpose: this fixture is a deliberate partial
-		// bootstrap, and a partial bootstrap now has to say so.
-		AllowPartial: true,
 	}
 
 	// Import first
@@ -120,15 +120,14 @@ func TestDBQueryAfterImport(t *testing.T) {
 func TestDBQueryDay(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &Config{
-		DataDir:       tmpDir,
-		ShealthDir:    "testdata/samsunghealth",
-		ShealthDirs:   []string{"testdata/samsunghealth"},
-		ATimeLoggerDB: "testdata/nonexistent.db3",
+		DataDir:     tmpDir,
+		ShealthDir:  "testdata/samsunghealth",
+		ShealthDirs: []string{"testdata/samsunghealth"},
+		// A complete aTimeLogger fixture. An import missing a stream is not
+		// promoted any more, so a DB test needs a sound import to have a DB at all.
+		ATimeLoggerDB: fakeATL(t, filepath.Join(tmpDir, "atimelogger", "database.db3")),
 		Days:          9999,
 		Exec:          true,
-		// No aTimeLogger here on purpose: this fixture is a deliberate partial
-		// bootstrap, and a partial bootstrap now has to say so.
-		AllowPartial: true,
 	}
 
 	_, err := execImport(cfg)
@@ -151,15 +150,14 @@ func TestDBQueryDay(t *testing.T) {
 func TestDBQueryEvent(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &Config{
-		DataDir:       tmpDir,
-		ShealthDir:    "testdata/samsunghealth",
-		ShealthDirs:   []string{"testdata/samsunghealth"},
-		ATimeLoggerDB: "testdata/nonexistent.db3",
+		DataDir:     tmpDir,
+		ShealthDir:  "testdata/samsunghealth",
+		ShealthDirs: []string{"testdata/samsunghealth"},
+		// A complete aTimeLogger fixture. An import missing a stream is not
+		// promoted any more, so a DB test needs a sound import to have a DB at all.
+		ATimeLoggerDB: fakeATL(t, filepath.Join(tmpDir, "atimelogger", "database.db3")),
 		Days:          9999,
 		Exec:          true,
-		// No aTimeLogger here on purpose: this fixture is a deliberate partial
-		// bootstrap, and a partial bootstrap now has to say so.
-		AllowPartial: true,
 	}
 
 	_, err := execImport(cfg)
@@ -182,7 +180,7 @@ func TestDBModeInStatus(t *testing.T) {
 		DataDir:       tmpDir,
 		ShealthDir:    "testdata/samsunghealth",
 		ShealthDirs:   []string{"testdata/samsunghealth"},
-		ATimeLoggerDB: "testdata/nonexistent.db3",
+		ATimeLoggerDB: fakeATL(t, filepath.Join(tmpDir, "atimelogger", "database.db3")),
 		Days:          7,
 	}
 
@@ -193,10 +191,7 @@ func TestDBModeInStatus(t *testing.T) {
 		t.Errorf("before import: mode = %q, want csv", status.Database.Mode)
 	}
 
-	// After import: db mode. The fixture has no aTimeLogger, so this import carries
-	// a warning — and a warning-carrying bootstrap only lands when it is asked for.
 	cfg.Exec = true
-	cfg.AllowPartial = true
 	execImport(cfg)
 	cfg.Exec = false
 

@@ -168,3 +168,48 @@ func TestPromoteNeverUnlinksTheLiveDBFirst(t *testing.T) {
 		t.Errorf("live DB = %q, want it untouched", b)
 	}
 }
+
+// A file full of rows the tool cannot read is not an empty file.
+//
+// Rename one header in a Samsung export — the schema drifts, it has happened — and
+// every row of that stream skips: 27,598 rows in the file, none landed. The old
+// code reported (0 rows, no error), the table said "empty", and on a FIRST import
+// there is no baseline to shrink against, so nothing warned. A partial database
+// promoted itself and that stream answered [] from then on.
+func TestRowsWeCannotReadAreNotAnEmptyStream(t *testing.T) {
+	cfg, shealth := lossCfg(t)
+
+	// The file stays syntactically perfect; only the required column is renamed.
+	path := filepath.Join(shealth, stressCSV)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := strings.Replace(string(b), "start_time", "start_time_v2", 1)
+	if drifted == string(b) {
+		t.Fatal("fixture has no start_time header to rename")
+	}
+	if err := os.WriteFile(path, []byte(drifted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First import: no baseline at all. This is the case that used to sail through.
+	result, err := execImport(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st := stream(t, result, "stress")
+	if st.Invalid == 0 {
+		t.Errorf("stress invalid = 0 — the rows the tool could not read were not counted")
+	}
+	if result.Status != statusWarn {
+		t.Errorf("status = %q, want warning — every row of a stream was unreadable", result.Status)
+	}
+	if dbExists(cfg) {
+		t.Error("a DB missing a whole stream was promoted — it would answer [] for stress forever")
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "could not be read") {
+		t.Errorf("warnings = %v, want the unreadable rows named", result.Warnings)
+	}
+}

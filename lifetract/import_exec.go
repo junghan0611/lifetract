@@ -75,7 +75,7 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	// Samsung Health CSVs
 	importFuncs := []struct {
 		name string
-		fn   func(*sql.DB, *Config) (int, int, error)
+		fn   func(*sql.DB, *Config) (streamCounts, error)
 	}{
 		{"sleep", importSleep},
 		{"sleep_stage", importSleepStage},
@@ -88,8 +88,8 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	}
 
 	for _, f := range importFuncs {
-		rows, rejected, err := f.fn(db, cfg)
-		result.record(base, f.name, "samsung_health", rows, rejected, err, db, cfg.ShealthDir)
+		c, err := f.fn(db, cfg)
+		result.record(base, f.name, "samsung_health", c, err, db, cfg.ShealthDir)
 	}
 
 	// aTimeLogger. Categories are a stream in their own right, not scaffolding for
@@ -98,8 +98,10 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	// The ledger watched the intervals and saw nothing wrong as the time axis went
 	// to zero. A stream nobody counts is a stream nobody can miss.
 	atl, atlErr := importATimeLogger(db, cfg)
-	result.record(base, "atl_category", "atimelogger", atl.categories, 0, atlErr, db, cfg.ATimeLoggerDB)
-	result.record(base, "atl_interval", "atimelogger", atl.intervals, atl.rejected, atlErr, db, cfg.ATimeLoggerDB)
+	result.record(base, "atl_category", "atimelogger",
+		streamCounts{offered: atl.categories}, atlErr, db, cfg.ATimeLoggerDB)
+	result.record(base, "atl_interval", "atimelogger",
+		streamCounts{offered: atl.intervals, rejected: atl.rejected, invalid: atl.invalid}, atlErr, db, cfg.ATimeLoggerDB)
 
 	// Counts alone would still miss a category that was renamed away underneath its
 	// blocks. So the join itself is checked: a block pointing at a category this
@@ -133,8 +135,12 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	// And the WAL is gone, not merely asked to go. TRUNCATE can report success and
 	// leave a file behind if a reader still holds the DB; that file would be left
 	// next to the candidate and never move with it.
-	if info, err := os.Stat(candidate + "-wal"); err == nil && info.Size() > 0 {
+	switch info, err := os.Stat(candidate + "-wal"); {
+	case err == nil && info.Size() > 0:
 		return nil, fmt.Errorf("candidate still has a %d-byte WAL after checkpoint — not promoting a database that is missing part of itself", info.Size())
+	case err != nil && !os.IsNotExist(err):
+		// We could not even look. That is not "the WAL is gone".
+		return nil, fmt.Errorf("could not check the candidate's WAL: %w", err)
 	}
 
 	// Only a sound run is promoted. Nothing else, and no exception for the first
@@ -149,19 +155,17 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	// the honest error path is gone. A bootstrap that quietly drops a stream is
 	// where "I could not look" becomes "there is nothing", permanently.
 	//
-	// So a partial bootstrap has to be asked for, out loud, with --allow-partial —
-	// and it says so in the payload afterwards. Over a live DB there is no such
-	// flag: the sound database always wins.
+	// There is no --allow-partial escape hatch, and there was one for about an hour.
+	// It promoted an incomplete bootstrap as long as the operator asked for it, and
+	// said `"partial": true` in the reply. But the reply is read once, by whoever ran
+	// the import; the DB outlives it and carries no such mark. The next process — the
+	// timeline collector — finds a database that exists, asks it for the missing
+	// stream, and is handed []. The hole becomes a tracked zero in a public record.
+	//
+	// An incomplete database never reaches the live path. That is the whole rule.
 	live := dbExists(cfg)
-	empty := result.TotalRows == 0
 	switch {
 	case result.Status == statusOK:
-		if err := promoteDB(candidate, path); err != nil {
-			return nil, fmt.Errorf("promote: %w", err)
-		}
-		result.DBPath = path
-	case !live && !empty && cfg.AllowPartial:
-		result.Partial = true
 		if err := promoteDB(candidate, path); err != nil {
 			return nil, fmt.Errorf("promote: %w", err)
 		}
@@ -169,16 +173,13 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	default:
 		result.DBPath = path // untouched, and still the good one
 		result.CandidatePath = candidate
-		switch {
-		case live:
+		if live {
 			result.warn("live DB left untouched — this run was not promoted. " +
 				"The candidate is kept for inspection: " + candidate)
-		case empty:
-			result.warn("nothing was imported — an empty database is not promoted. " +
-				"Check the export before trusting any query: " + candidate)
-		default:
-			result.warn("this run is incomplete and there is no DB to fall back on — not promoted. " +
-				"Fix the export, or bootstrap deliberately with --allow-partial. Candidate: " + candidate)
+		} else {
+			result.warn("this run is not sound and there is no DB to fall back on — nothing was promoted. " +
+				"Fix the export and run again; a database missing a stream would answer [] for it forever. " +
+				"Candidate: " + candidate)
 		}
 	}
 
@@ -252,11 +253,7 @@ type ImportResult struct {
 	// threw rows away and did not say so is the same silence as one that lost
 	// them. It is a separate channel from warnings because a refusal is not a
 	// failure: warnings block promotion, an accounted-for refusal does not.
-	Rejected []string `json:"rejected"`
-	// Partial is true when this DB was promoted despite warnings, because the
-	// operator asked for it (--allow-partial) with nothing to fall back on. A
-	// consumer must be able to tell a complete database from a deliberate stopgap.
-	Partial       bool          `json:"partial,omitempty"`
+	Rejected      []string      `json:"rejected"`
 	Note          string        `json:"note,omitempty"`
 	BaselineAt    string        `json:"baseline_at,omitempty"`
 	Tables        []TableResult `json:"tables"`
@@ -291,12 +288,16 @@ type TableResult struct {
 	// Rejected rows are not in Rows: the count here is what was refused, so
 	// rows + rejected is what the source offered.
 	Rejected int `json:"rejected,omitempty"`
+	// Invalid rows are in the file and could not be read at all. Distinct from
+	// rejected (refused on purpose) and from empty (nothing there).
+	Invalid int `json:"invalid,omitempty"`
 }
 
 // record judges one stream against the ledger, files it in the result, and writes
 // it back to the ledger — including a zero. A zero that goes unrecorded is a loss
 // that goes unnoticed next time.
-func (r *ImportResult) record(base *importBaseline, name, source string, offered, rejected int, err error, db *sql.DB, sourcePath string) {
+func (r *ImportResult) record(base *importBaseline, name, source string, c streamCounts, err error, db *sql.DB, sourcePath string) {
+	offered, rejected := c.offered, c.rejected
 	// What the importer handed over is a claim; what the table holds is the fact.
 	// They agree today, and nothing enforced that they must — a constraint, a
 	// duplicate id or a failed write would have left the ledger recording rows the
@@ -320,9 +321,20 @@ func (r *ImportResult) record(base *importBaseline, name, source string, offered
 		}
 	}
 
+	// Rows the file has and we could not read at all. This is not "the stream is
+	// empty" and it is not a policy filter: it is the tool failing to understand its
+	// own source. One renamed header in a Samsung export skips every row of a
+	// stream, and on a first import — no baseline, nothing to shrink against — it
+	// used to promote as a clean, empty table.
+	if c.invalid > 0 {
+		r.warn(fmt.Sprintf(
+			"%s: %s rows in the source could not be read (a required field is missing or a timestamp will not parse) — the export's shape may have changed",
+			name, comma(c.invalid)))
+	}
+
 	status, warning := base.classify(name, rows, rejected, err)
 
-	t := TableResult{Name: name, Rows: rows, Status: status, Rejected: rejected}
+	t := TableResult{Name: name, Rows: rows, Status: status, Rejected: rejected, Invalid: c.invalid}
 	if prev, ok := base.Prev[name]; ok {
 		delta := rows - prev
 		t.PrevRows = &prev
@@ -351,6 +363,24 @@ func (r *ImportResult) record(base *importBaseline, name, source string, offered
 	if err := logImport(db, r.runID, r.runAt, source, name, rows, rejected, sourcePath); err != nil {
 		r.warn(fmt.Sprintf("%s: ledger write failed — not promoting: %v", name, err))
 	}
+}
+
+// streamCounts is what one stream's import actually did. These are three different
+// facts and they were being reported as one:
+//
+//   - offered:  rows handed to the DB (the DB decides what lands)
+//   - rejected: rows refused on purpose — a placeholder timestamp, not a measurement
+//   - invalid:  rows the file HAS and we could not use at all — a required field
+//     missing, or a timestamp that will not parse
+//
+// invalid was the fully silent one. A `continue` swallowed it. Rename one header in
+// the Samsung export and every row of a stream skips: 27,598 rows in the file, none
+// landed, "empty" in the manifest — and on a first import, with no baseline to
+// shrink against, not one word of warning.
+type streamCounts struct {
+	offered  int
+	rejected int
+	invalid  int
 }
 
 // --- writing rows without losing the errors ---
@@ -451,42 +481,45 @@ var sentinelFloor = defaultSentinelFloor
 
 func isSentinelTime(t time.Time) bool { return t.Before(sentinelFloor) }
 
-func importSleep(db *sql.DB, cfg *Config) (int, int, error) {
+func importSleep(db *sql.DB, cfg *Config) (streamCounts, error) {
+	var c streamCounts
 	path := cfg.shealthCSV("com.samsung.shealth.sleep.")
 	if path == "" {
-		return 0, 0, fmt.Errorf("csv not found")
+		return c, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
 	in, err := newInserter(db, `INSERT OR IGNORE INTO sleep
 		(id, uuid, start_time, end_time, duration_min, sleep_score, efficiency, total_light_min, total_rem_min)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
-	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["com.samsung.health.sleep.start_time"]
 		endStr := rec["com.samsung.health.sleep.end_time"]
 		if startStr == "" || endStr == "" {
+			c.invalid++
 			continue
 		}
 
 		start, err := parseShealthTime(startStr)
 		if err != nil {
+			c.invalid++
 			continue
 		}
 		end, err := parseShealthTime(endStr)
 		if err != nil {
+			c.invalid++
 			continue
 		}
 		if isSentinelTime(start) {
-			rejected++
+			c.rejected++
 			continue
 		}
 
@@ -504,33 +537,33 @@ func importSleep(db *sql.DB, cfg *Config) (int, int, error) {
 			parseFloat(rec["total_light_duration"]),
 			parseFloat(rec["total_rem_duration"]),
 		)
-		count++
+		c.offered++
 	}
 	if _, err := in.done(); err != nil {
-		return 0, 0, err
+		return c, err
 	}
-	return count, rejected, nil
+	return c, nil
 }
 
-func importSleepStage(db *sql.DB, cfg *Config) (int, int, error) {
+func importSleepStage(db *sql.DB, cfg *Config) (streamCounts, error) {
+	var c streamCounts
 	path := cfg.shealthCSV("com.samsung.health.sleep_stage.")
 	if path == "" {
-		return 0, 0, fmt.Errorf("csv not found")
+		return c, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
 	in, err := newInserter(db, `INSERT OR IGNORE INTO sleep_stage
 		(id, sleep_uuid, start_time, end_time, stage)
 		VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
-	count, rejected := 0, 0
 	for _, rec := range records {
 		uuid := rec["datauuid"]
 		sleepUUID := rec["sleep_id"]
@@ -538,15 +571,17 @@ func importSleepStage(db *sql.DB, cfg *Config) (int, int, error) {
 		endStr := rec["end_time"]
 		stageStr := rec["stage"]
 		if startStr == "" || endStr == "" || stageStr == "" {
+			c.invalid++
 			continue
 		}
 
 		start, err := parseShealthTime(startStr)
 		if err != nil {
+			c.invalid++
 			continue
 		}
 		if isSentinelTime(start) {
-			rejected++
+			c.rejected++
 			continue
 		}
 
@@ -556,48 +591,50 @@ func importSleepStage(db *sql.DB, cfg *Config) (int, int, error) {
 		}
 
 		in.exec(id, sleepUUID, startStr, endStr, parseInt(stageStr))
-		count++
+		c.offered++
 	}
 	if _, err := in.done(); err != nil {
-		return 0, 0, err
+		return c, err
 	}
-	return count, rejected, nil
+	return c, nil
 }
 
-func importHeartRate(db *sql.DB, cfg *Config) (int, int, error) {
+func importHeartRate(db *sql.DB, cfg *Config) (streamCounts, error) {
+	var c streamCounts
 	path := cfg.shealthCSV("com.samsung.shealth.tracker.heart_rate.")
 	if path == "" {
-		return 0, 0, fmt.Errorf("csv not found")
+		return c, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
 	in, err := newInserter(db, `INSERT OR IGNORE INTO heart_rate (id, start_time, heart_rate) VALUES (?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
-	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["com.samsung.health.heart_rate.start_time"]
 		hrStr := rec["com.samsung.health.heart_rate.heart_rate"]
 		if startStr == "" || hrStr == "" {
+			c.invalid++
 			continue
 		}
 		hr := parseFloat(hrStr)
 		if hr <= 0 {
-			continue
+			continue // a policy filter, not a broken row
 		}
 
 		start, err := parseShealthTime(startStr)
 		if err != nil {
+			c.invalid++
 			continue
 		}
 		if isSentinelTime(start) {
-			rejected++
+			c.rejected++
 			continue
 		}
 
@@ -608,32 +645,32 @@ func importHeartRate(db *sql.DB, cfg *Config) (int, int, error) {
 		}
 
 		in.exec(id, startStr, hr)
-		count++
+		c.offered++
 	}
 	if _, err := in.done(); err != nil {
-		return 0, 0, err
+		return c, err
 	}
-	return count, rejected, nil
+	return c, nil
 }
 
-func importStepsDaily(db *sql.DB, cfg *Config) (int, int, error) {
+func importStepsDaily(db *sql.DB, cfg *Config) (streamCounts, error) {
+	var c streamCounts
 	path := cfg.shealthCSV("com.samsung.shealth.step_daily_trend.")
 	if path == "" {
-		return 0, 0, fmt.Errorf("csv not found")
+		return c, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
 	in, err := newInserter(db, `INSERT OR IGNORE INTO steps_daily
 		(id, date, day_time_ms, count, distance, calorie) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
-	count, rejected := 0, 0
 	for _, rec := range records {
 		// source_type=-2 is Samsung Health's merged/deduplicated record
 		// across multiple devices (phone + watch). Other values are per-device
@@ -644,11 +681,12 @@ func importStepsDaily(db *sql.DB, cfg *Config) (int, int, error) {
 
 		countStr := rec["count"]
 		if countStr == "" {
+			c.invalid++
 			continue
 		}
 		steps := parseInt(countStr)
 		if steps <= 0 {
-			continue
+			continue // a policy filter, not a broken row
 		}
 
 		dayTimeStr := rec["day_time"]
@@ -666,16 +704,18 @@ func importStepsDaily(db *sql.DB, cfg *Config) (int, int, error) {
 		if date == "" {
 			ctStr := rec["create_time"]
 			if ctStr == "" {
+				c.invalid++
 				continue
 			}
 			ct, err := parseShealthTime(ctStr)
 			if err != nil {
+				c.invalid++
 				continue
 			}
 			date = dateStr(ct)
 		}
 		if d, err := time.ParseInLocation("2006-01-02", date, KST); err == nil && isSentinelTime(d) {
-			rejected++
+			c.rejected++
 			continue
 		}
 
@@ -688,36 +728,37 @@ func importStepsDaily(db *sql.DB, cfg *Config) (int, int, error) {
 		in.exec(id, date, dayTimeMs, steps,
 			parseFloat(rec["distance"]),
 			parseFloat(rec["calorie"]))
-		count++
+		c.offered++
 	}
 	if _, err := in.done(); err != nil {
-		return 0, 0, err
+		return c, err
 	}
-	return count, rejected, nil
+	return c, nil
 }
 
-func importStress(db *sql.DB, cfg *Config) (int, int, error) {
+func importStress(db *sql.DB, cfg *Config) (streamCounts, error) {
+	var c streamCounts
 	path := cfg.shealthCSV("com.samsung.shealth.stress.")
 	if path == "" {
-		return 0, 0, fmt.Errorf("csv not found")
+		return c, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
 	in, err := newInserter(db, `INSERT OR IGNORE INTO stress
 		(id, start_time, score, min_score, max_score) VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
-	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["start_time"]
 		scoreStr := rec["score"]
 		if startStr == "" || scoreStr == "" {
+			c.invalid++
 			continue
 		}
 
@@ -726,10 +767,11 @@ func importStress(db *sql.DB, cfg *Config) (int, int, error) {
 		// a placeholder time just as easily as one without.
 		start, err := parseShealthTime(startStr)
 		if err != nil {
+			c.invalid++
 			continue
 		}
 		if isSentinelTime(start) {
-			rejected++
+			c.rejected++
 			continue
 		}
 
@@ -742,47 +784,49 @@ func importStress(db *sql.DB, cfg *Config) (int, int, error) {
 			parseFloat(scoreStr),
 			parseFloat(rec["min"]),
 			parseFloat(rec["max"]))
-		count++
+		c.offered++
 	}
 	if _, err := in.done(); err != nil {
-		return 0, 0, err
+		return c, err
 	}
-	return count, rejected, nil
+	return c, nil
 }
 
-func importExercise(db *sql.DB, cfg *Config) (int, int, error) {
+func importExercise(db *sql.DB, cfg *Config) (streamCounts, error) {
+	var c streamCounts
 	// Find exact exercise CSV (not photo/program variants)
 	matches, _ := filepath.Glob(filepath.Join(cfg.ShealthDir, "com.samsung.shealth.exercise.2*.csv"))
 	if len(matches) == 0 {
-		return 0, 0, fmt.Errorf("csv not found")
+		return c, fmt.Errorf("csv not found")
 	}
 	path := matches[0]
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
 	in, err := newInserter(db, `INSERT OR IGNORE INTO exercise
 		(id, start_time, end_time, exercise_type, duration_ms, calorie, mean_hr, max_hr, distance)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
-	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["com.samsung.health.exercise.start_time"]
 		if startStr == "" {
+			c.invalid++
 			continue
 		}
 
 		start, err := parseShealthTime(startStr)
 		if err != nil {
+			c.invalid++
 			continue
 		}
 		if isSentinelTime(start) {
-			rejected++
+			c.rejected++
 			continue
 		}
 
@@ -805,44 +849,46 @@ func importExercise(db *sql.DB, cfg *Config) (int, int, error) {
 			parseFloat(rec["com.samsung.health.exercise.mean_heart_rate"]),
 			parseFloat(rec["com.samsung.health.exercise.max_heart_rate"]),
 			parseFloat(rec["com.samsung.health.exercise.total_distance"]))
-		count++
+		c.offered++
 	}
 	if _, err := in.done(); err != nil {
-		return 0, 0, err
+		return c, err
 	}
-	return count, rejected, nil
+	return c, nil
 }
 
-func importWeight(db *sql.DB, cfg *Config) (int, int, error) {
+func importWeight(db *sql.DB, cfg *Config) (streamCounts, error) {
+	var c streamCounts
 	path := cfg.shealthCSV("com.samsung.health.weight.")
 	if path == "" {
-		return 0, 0, fmt.Errorf("csv not found")
+		return c, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
 	in, err := newInserter(db, `INSERT OR IGNORE INTO weight
 		(id, start_time, weight, body_fat, muscle_mass) VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
-	count, rejected := 0, 0
 	for _, rec := range records {
 		startStr := rec["start_time"]
 		if startStr == "" {
+			c.invalid++
 			continue
 		}
 
 		start, err := parseShealthTime(startStr)
 		if err != nil {
+			c.invalid++
 			continue
 		}
 		if isSentinelTime(start) {
-			rejected++
+			c.rejected++
 			continue
 		}
 
@@ -856,31 +902,31 @@ func importWeight(db *sql.DB, cfg *Config) (int, int, error) {
 			parseFloat(rec["weight"]),
 			parseFloat(rec["body_fat"]),
 			parseFloat(rec["muscle_mass"]))
-		count++
+		c.offered++
 	}
 	if _, err := in.done(); err != nil {
-		return 0, 0, err
+		return c, err
 	}
-	return count, rejected, nil
+	return c, nil
 }
 
-func importHRV(db *sql.DB, cfg *Config) (int, int, error) {
+func importHRV(db *sql.DB, cfg *Config) (streamCounts, error) {
+	var c streamCounts
 	path := cfg.shealthCSV("com.samsung.health.hrv.")
 	if path == "" {
-		return 0, 0, fmt.Errorf("csv not found")
+		return c, fmt.Errorf("csv not found")
 	}
 
 	_, records, err := shealthReadCSV(path)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
 	in, err := newInserter(db, `INSERT OR IGNORE INTO hrv (id, start_time, hrv_rmssd) VALUES (?, ?, ?)`)
 	if err != nil {
-		return 0, 0, err
+		return c, err
 	}
 
-	count, rejected := 0, 0
 	for _, rec := range records {
 		// HRV CSV column names vary; try common patterns
 		startStr := firstNonEmpty(rec,
@@ -891,15 +937,17 @@ func importHRV(db *sql.DB, cfg *Config) (int, int, error) {
 			"rmssd",
 			"heart_rate_variability")
 		if startStr == "" {
+			c.invalid++
 			continue
 		}
 
 		start, err := parseShealthTime(startStr)
 		if err != nil {
+			c.invalid++
 			continue
 		}
 		if isSentinelTime(start) {
-			rejected++
+			c.rejected++
 			continue
 		}
 
@@ -912,12 +960,12 @@ func importHRV(db *sql.DB, cfg *Config) (int, int, error) {
 		}
 
 		in.exec(id, startStr, parseFloat(hrvStr))
-		count++
+		c.offered++
 	}
 	if _, err := in.done(); err != nil {
-		return 0, 0, err
+		return c, err
 	}
-	return count, rejected, nil
+	return c, nil
 }
 
 // --- aTimeLogger importer ---
@@ -928,6 +976,7 @@ type atlCounts struct {
 	categories int
 	intervals  int
 	rejected   int
+	invalid    int
 }
 
 // countOrphanIntervals counts blocks whose category is not in the DB. dbQueryTime
