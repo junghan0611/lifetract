@@ -3,7 +3,8 @@
 #
 # Usage:
 #   ./run.sh build [INSTALL_DIR]   — Build lifetract + install
-#   ./run.sh deploy                — build + 스킬 자리에 바이너리·SKILL.md 세트 반영
+#   ./run.sh deploy                — build + ~/.local/bin 에 커밋된 바이너리만 반영
+#                                    (스킬 자리는 agent-config 가 관리한다)
 #   ./run.sh test                  — Run all tests
 #   ./run.sh bench                 — Run benchmarks
 #   ./run.sh update                — 덤프 배치 + DB 재빌드 (잃으면 exit 1)
@@ -21,23 +22,25 @@ case "${1:-}" in
         echo "스킬 자리에도 반영하려면: ./run.sh deploy"
         ;;
     deploy)
-        # 스킬 자리는 **바이너리 + SKILL.md 가 한 세트**다. 둘이 따로 움직이면
-        # 에이전트는 없는 기능을 모르거나, 있는 계약을 어긴다.
+        # 이 리포는 **바이너리 한 자리만** 배포한다: $BIN_DIR (기본 ~/.local/bin).
         #
-        # 2026-07-14 에 실제로 그랬다: 바이너리만 손으로 복사해 오는 동안 SKILL.md 는
-        # 5-26 자에서 멈춰 있었다. 코드는 KST 고정 · 반개방 창 · stale 신고를 지키는데,
-        # 에이전트가 읽는 문서에는 --from/--to 도 시간 계약도 통째로 없었다.
-        # 지켜지는 줄 아무도 모르는 계약은 없는 계약이다. 그래서 복사를 손에서 뺀다.
-        # 해시를 출력만 하던 판본이 있었다. 그건 검사가 아니라 검사처럼 보이는 출력이고,
-        # 실제로 ~/.local/bin 은 미커밋 빌드인 채 스킬 자리만 갱신돼 있었다 —
-        # 그리고 나는 그 출력을 증거로 읽었다. 이제 강제한다:
-        #   dirty worktree 거부 · vcs.revision == HEAD · vcs.modified == false ·
-        #   세 자리 SHA256 일치. 하나라도 어긋나면 배포는 실패한다.
+        # 스킬 자리(바이너리 + SKILL.md)는 agent-config 가 단독으로 관리한다
+        # (`agent-config/run.sh setup:build`, 테스트 게이트 포함). SSOT 는
+        # agent-config/skills/lifetract/SKILL.md 하나다. 여기서 또 밀어 넣으면
+        # 같은 자리를 두 리포가 쓰는 꼴이라, 어느 쪽이 참인지 아무도 모른다.
+        #
+        # 왜 여기서 뺐나 — 옛 판본은 스킬 자리를 두 개로 알고 "세 자리 SHA256 일치"를
+        # 검사했다. 그런데 ~/.claude/skills 자체가 agent-config/skills 로 걸린 심링크라
+        # 두 항목은 **같은 디렉토리 하나**였다. 즉 한 자리를 두 번 세고 세 자리를 봤다고
+        # 말하던 검사다 — 하필 "검사가 검사인 척하는 것"을 죽이려고 만든 물건이.
+        #
+        # 남긴 것은 provenance 가드다. 이건 오늘 실제로 잘못된 배포를 막았다:
+        #   dirty worktree 거부 · vcs.revision == HEAD · vcs.modified == false.
+        # 배포된 숫자에 대응하는 커밋이 없으면 그 숫자는 출처가 없다.
+        #
+        # 세트 보장("바이너리와 SKILL.md 는 따로 움직이지 않는다")은 버린 게 아니라
+        # agent-config 매니저 층으로 올렸다. 거기서 다섯 바이너리 전부에 걸린다.
         BIN_DIR="${LIFETRACT_BIN_DIR:-$HOME/.local/bin}"
-        SKILL_DIRS=(
-            "$HOME/.claude/skills/lifetract"
-            "$HOME/repos/gh/agent-config/skills/lifetract"
-        )
 
         if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain)" ]; then
             echo "❌ 작업 트리가 dirty 하다 — 커밋 전 바이너리를 배포하지 않는다." >&2
@@ -63,43 +66,8 @@ case "${1:-}" in
         fi
         echo "   ✓ vcs.revision=${BIN_REV:0:12} vcs.modified=false"
 
-        for d in "${SKILL_DIRS[@]}"; do
-            if [ ! -d "$d" ]; then
-                echo "⚠️  스킬 자리 없음 (스킵): $d"
-                continue
-            fi
-            cp "$BIN_DIR/lifetract" "$d/lifetract"
-            cp "$SCRIPT_DIR/SKILL.md" "$d/SKILL.md"
-            echo "✅ $d ← lifetract + SKILL.md"
-        done
-
-        # 세트가 실제로 맞는지 강제한다. 하나라도 어긋나면 exit 1.
-        echo ""
-        echo "🔍 세트 검증:"
         WANT_BIN=$(sha256sum "$BIN_DIR/lifetract" | awk '{print $1}')
-        WANT_DOC=$(sha256sum "$SCRIPT_DIR/SKILL.md" | awk '{print $1}')
-        FAILED=0
-        for d in "$BIN_DIR" "${SKILL_DIRS[@]}"; do
-            [ -d "$d" ] || continue
-            GOT=$(sha256sum "$d/lifetract" 2>/dev/null | awk '{print $1}')
-            if [ "$GOT" != "$WANT_BIN" ]; then
-                echo "   ❌ ${GOT:0:8} != ${WANT_BIN:0:8}  $d/lifetract" >&2
-                FAILED=1
-            else
-                echo "   ✓ ${GOT:0:8}  $d/lifetract"
-            fi
-        done
-        for d in "${SKILL_DIRS[@]}"; do
-            [ -d "$d" ] || continue
-            GOT=$(sha256sum "$d/SKILL.md" 2>/dev/null | awk '{print $1}')
-            if [ "$GOT" != "$WANT_DOC" ]; then
-                echo "   ❌ ${GOT:0:8} != ${WANT_DOC:0:8}  $d/SKILL.md" >&2
-                FAILED=1
-            else
-                echo "   ✓ ${GOT:0:8}  $d/SKILL.md"
-            fi
-        done
-        [ "$FAILED" -eq 0 ] || { echo "" >&2; echo "❌ 배포가 한 세트가 아니다." >&2; exit 1; }
+        echo "   ✓ ${WANT_BIN:0:8}  $BIN_DIR/lifetract"
 
         echo ""
         echo "   배포본 fingerprint (관측소 manifest 용):"
@@ -107,7 +75,8 @@ case "${1:-}" in
         echo "     tool_vcs_revision=$HEAD_SHA"
         echo "     tool_vcs_modified=false"
         echo ""
-        echo "   agent-config 의 SKILL.md 는 git 추적 대상이다 — 커밋은 GLG 가 한다."
+        echo "   스킬 자리(바이너리 + SKILL.md)는 agent-config 가 배포한다:"
+        echo "     cd ~/repos/gh/agent-config && ./run.sh setup:build"
         ;;
     test)
         echo "Running tests..."
@@ -209,7 +178,8 @@ lifetract — Life tracking CLI for AI agents
 
 Usage:
   ./run.sh build [DIR]   Build lifetract, install to DIR (default: ./lifetract/)
-  ./run.sh deploy        build + 스킬 두 자리에 바이너리·SKILL.md 세트로 반영
+  ./run.sh deploy        build + ~/.local/bin (커밋된 빌드만; provenance 강제)
+                         스킬 자리는 agent-config ./run.sh setup:build 가 맡는다
   ./run.sh test          Run all tests
   ./run.sh bench         Run benchmarks
   ./run.sh update        Syncthing 덤프에서 데이터 배치 + DB 재빌드

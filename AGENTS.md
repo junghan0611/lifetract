@@ -239,9 +239,13 @@ aTimeLogger(db3)는 경로가 달라 따로 멈춘다.
 지속시간과 카테고리는 나가도 되고, 코멘트는 안 된다. 원시 블록 노출을 언젠가
 하더라도 코멘트는 *기본 제외* 가 아니라 *아예 나갈 수 없어야* 한다.
 
-## 4. Commands (SSOT 는 [SKILL.md](SKILL.md))
+## 4. Commands (SSOT 는 `agent-config/skills/lifetract/SKILL.md`)
 
-상세 옵션·예시는 SKILL.md 가 권위. 여기는 손에 익혀야 할 최소만.
+에이전트가 읽는 문서는 **agent-config 가 단독 관리**한다. 이 리포에는 SKILL.md 사본을
+두지 않는다 — 두 벌이 있으면 어느 쪽이 참인지 아무도 모르고, 실제로 5-26 자 사본이
+화석으로 남아 계약을 통째로 숨긴 적이 있다. 계약을 바꾸면 그쪽 문서도 같이 고쳐라.
+
+상세 옵션·예시는 그 SKILL.md 가 권위. 여기는 손에 익혀야 할 최소만.
 
 ```bash
 ./run.sh build      # 빌드 + 설치 (~/.local/bin)
@@ -294,7 +298,7 @@ JSON 출력이 기본. 에이전트는 stdout 그대로 파싱.
 |---|---|
 | [denotecli](https://github.com/junghan0611/denotecli) | 정성 — 노트/저널. 같은 Denote ID |
 | [self-tracking-data](https://github.com/junghan0611/self-tracking-data) | 데이터 raw SSOT |
-| [pi-skills/lifetract](https://github.com/junghan0611/pi-skills/tree/main/lifetract) | 에이전트 스킬 (바이너리 + SKILL.md 번들) |
+| agent-config `skills/lifetract` | 에이전트 스킬 SSOT (SKILL.md + 바이너리 배포). `./run.sh setup:build` 가 테스트 게이트를 태워 설치한다 |
 | [nixos-config](https://github.com/junghan0611/nixos-config) | Oracle Docker, Home Assistant 인프라 — 새 입력 스트림의 호스트 |
 | [homeagent-config](https://github.com/junghan0611/homeagent-config) | IoT/Home automation 측 연결고리 (Open Home Foundation 방향) |
 
