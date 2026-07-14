@@ -55,13 +55,41 @@ stress 27,598 → 0 을 잡은 건 테스트가 아니라 *사람 눈에 띈 총
 - [x] **프루닝 안 함** (관측소 발견 3) — 의도된 선택. 오래된 run 을 자르면 죽은 스트림의
       *마지막 비영 행수* 가 날아가고, 그게 경고를 계속 울리는 근거다. 잊는 원장은 침묵이다.
 
-**미해결 — 관측소 발견 2 (🟡)**: 지금 배포된 바이너리(`1863570d`)에 **대응하는 커밋이 없다.**
-관측소는 manifest 에 `code_sha256` 을 박아 자기 코드를 고정하는데, lifetract 바이너리는
-불투명한 의존이다. **커밋되면 해소된다** — 그때까지 이 바이너리로 나온 숫자는 "미커밋
-빌드" 라벨이 붙어야 한다.
+### 2차 검산에서 나온 것 (관측소, 2026-07-14 오후) — 여섯 중 다섯 닫힘
 
-**다음 한 걸음**: GLG 커밋·푸시 (리포 둘 — `lifetract` + `agent-config/skills/lifetract/SKILL.md`)
-→ 관측소에 회신.
+- [x] **🔴 잃은 DB 를 운영에 승격하고 있었다** (`de94794`). "잃었다고 말한다"만 닫고
+      "잃은 DB 를 넘기지 않는다"는 안 닫혀 있었다 — `os.Remove(path)` 가 먼저 도니
+      경고가 찍힐 때쯤엔 성한 DB 가 이미 없었다. **후보 → 검증 → 원자적 승격**
+      (`promoteDB`, WAL checkpoint 후 rename). 승격을 막는 것 셋: 스트림 손실 /
+      못 읽은 소스 / 원장 기록 실패. *행동 전에 도착하지 않는 경고는 묘비명이다.*
+- [x] **🟠 원장이 내부 오류를 삼켰다** — `rows.Scan` continue, `rows.Err()` 미확인,
+      `carryForward`/`logImport` 오류 무시. 전부 판정에 반영. **반쪽 원장은 없는 원장보다
+      나쁘다** (없는 쪽은 스스로를 알린다). `initSchema` 를 var 로 열어 실패 경로를 테스트.
+- [x] **🟠 첫 import 에서 "소스를 못 읽음"이 ok 였다** — "비교할 게 없다"는 손실을 주장하지
+      않을 이유지, **못 읽은 소스를 성하다고 부를 이유가 아니었다.** 목도 현실을 닮게 고침
+      (weight·hrv fixture + 진짜 aTimeLogger DB).
+- [x] **🔴 deploy 가 해시를 출력만 했다** (`1e38ec4`, `8e3471d`) — 검사가 아니라 검사처럼
+      보이는 출력. 실제로 `~/.local/bin` 은 미커밋 빌드(`210ae55` dirty)인 채 스킬 자리만
+      갱신돼 있었고 **나는 그 출력을 증거로 읽었다.** 이제 dirty 트리 거부 ·
+      `vcs.revision == HEAD` · `vcs.modified == false` · 세 자리 SHA256 일치를 **강제**.
+- [x] **🟡 dry-run 이 import 행수인 척했다** (`25a1a70`) — 225,364 vs 203,539. `total_rows`
+      → `raw_source_rows` + source 별 `imported` 플래그. **한 낱말이 두 숫자를 가리키면
+      도구는 실수로 거짓말을 시작한다.**
+- [x] **문서 정합** (`00a7f23`) — SKILL.md 가 "계약 넷"이라 말하고 AGENTS.md 는 다섯이었다.
+      Data Coverage 2026-05-19 / 14,331 → 2026-07-13 / 14,617 실측.
+
+**배포 provenance 닫힘**: 세 자리 전부 `8e3471d` clean (`vcs.modified=false`),
+`tool_sha256=424c7be7…`. `run.sh deploy` 가 fingerprint 를 찍어 준다.
+
+### 남은 것
+
+- **관측소 쪽 (내 리포 아님)**: `timeline/collect.py` 의 manifest 에 lifetract fingerprint
+  (`tool_sha256` / `tool_vcs_revision` / `tool_vcs_modified`) 추가. `code_sha256` 은
+  collector 파일 하나만 고정하므로 **어느 lifetract 바이너리로 뽑았는지 snapshot 에
+  안 남는다.** 첫 public projection 전에 닫아야 한다. deploy 가 그 세 값을 출력한다.
+- **`agent-config/skills/lifetract/SKILL.md` 커밋** — 작업 트리에 갱신된 채 대기 (GLG 판단).
+- **프루닝 안 함** (검산 발견 3) — 의도. 오래된 run 을 자르면 죽은 스트림의 마지막 비영
+  행수가 날아가고, 그게 경고를 계속 울리는 근거다. 잊는 원장은 침묵이다.
 
 ## ✅ 닫힘 — 시간 계약 (2026-07-14, 푸시·배포 완료)
 
