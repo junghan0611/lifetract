@@ -28,15 +28,38 @@ case "${1:-}" in
         # 5-26 자에서 멈춰 있었다. 코드는 KST 고정 · 반개방 창 · stale 신고를 지키는데,
         # 에이전트가 읽는 문서에는 --from/--to 도 시간 계약도 통째로 없었다.
         # 지켜지는 줄 아무도 모르는 계약은 없는 계약이다. 그래서 복사를 손에서 뺀다.
+        # 해시를 출력만 하던 판본이 있었다. 그건 검사가 아니라 검사처럼 보이는 출력이고,
+        # 실제로 ~/.local/bin 은 미커밋 빌드인 채 스킬 자리만 갱신돼 있었다 —
+        # 그리고 나는 그 출력을 증거로 읽었다. 이제 강제한다:
+        #   dirty worktree 거부 · vcs.revision == HEAD · vcs.modified == false ·
+        #   세 자리 SHA256 일치. 하나라도 어긋나면 배포는 실패한다.
         BIN_DIR="${LIFETRACT_BIN_DIR:-$HOME/.local/bin}"
         SKILL_DIRS=(
             "$HOME/.claude/skills/lifetract"
             "$HOME/repos/gh/agent-config/skills/lifetract"
         )
 
-        echo "🔨 build → $BIN_DIR"
+        if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain)" ]; then
+            echo "❌ 작업 트리가 dirty 하다 — 커밋 전 바이너리를 배포하지 않는다." >&2
+            echo "   배포된 숫자에 대응하는 커밋이 없으면 provenance 가 끊긴다." >&2
+            git -C "$SCRIPT_DIR" status --short >&2
+            exit 1
+        fi
+
+        HEAD_SHA=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
+
+        echo "🔨 build → $BIN_DIR  (HEAD ${HEAD_SHA:0:12})"
         mkdir -p "$BIN_DIR"
         (cd "$SCRIPT_DIR/lifetract" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$BIN_DIR/lifetract" .)
+
+        # 바이너리가 스스로 무엇인지 말하게 한다 (go version -m).
+        BIN_REV=$(go version -m "$BIN_DIR/lifetract" | awk '$1=="build" && $2=="vcs.revision" {print $3}')
+        BIN_MOD=$(go version -m "$BIN_DIR/lifetract" | awk '$1=="build" && $2=="vcs.modified" {print $3}')
+        if [ "$BIN_REV" != "$HEAD_SHA" ] || [ "$BIN_MOD" != "false" ]; then
+            echo "❌ 빌드가 HEAD 를 안 담았다: revision=${BIN_REV:0:12} modified=$BIN_MOD" >&2
+            exit 1
+        fi
+        echo "   ✓ vcs.revision=${BIN_REV:0:12} vcs.modified=false"
 
         for d in "${SKILL_DIRS[@]}"; do
             if [ ! -d "$d" ]; then
@@ -48,17 +71,39 @@ case "${1:-}" in
             echo "✅ $d ← lifetract + SKILL.md"
         done
 
-        # 세트가 맞는지 눈으로 확인한다. 조용히 어긋나는 게 이 스크립트가 고치는 병이다.
+        # 세트가 실제로 맞는지 강제한다. 하나라도 어긋나면 exit 1.
         echo ""
-        echo "🔍 세트 확인:"
+        echo "🔍 세트 검증:"
+        WANT_BIN=$(sha256sum "$BIN_DIR/lifetract" | awk '{print $1}')
+        WANT_DOC=$(sha256sum "$SCRIPT_DIR/SKILL.md" | awk '{print $1}')
+        FAILED=0
         for d in "$BIN_DIR" "${SKILL_DIRS[@]}"; do
-            [ -f "$d/lifetract" ] || continue
-            printf '   %s  %s\n' "$(md5sum "$d/lifetract" | cut -c1-8)" "$d/lifetract"
+            [ -d "$d" ] || continue
+            GOT=$(sha256sum "$d/lifetract" 2>/dev/null | awk '{print $1}')
+            if [ "$GOT" != "$WANT_BIN" ]; then
+                echo "   ❌ ${GOT:0:8} != ${WANT_BIN:0:8}  $d/lifetract" >&2
+                FAILED=1
+            else
+                echo "   ✓ ${GOT:0:8}  $d/lifetract"
+            fi
         done
-        for d in "$SCRIPT_DIR" "${SKILL_DIRS[@]}"; do
-            [ -f "$d/SKILL.md" ] || continue
-            printf '   %s  %s\n' "$(md5sum "$d/SKILL.md" | cut -c1-8)" "$d/SKILL.md"
+        for d in "${SKILL_DIRS[@]}"; do
+            [ -d "$d" ] || continue
+            GOT=$(sha256sum "$d/SKILL.md" 2>/dev/null | awk '{print $1}')
+            if [ "$GOT" != "$WANT_DOC" ]; then
+                echo "   ❌ ${GOT:0:8} != ${WANT_DOC:0:8}  $d/SKILL.md" >&2
+                FAILED=1
+            else
+                echo "   ✓ ${GOT:0:8}  $d/SKILL.md"
+            fi
         done
+        [ "$FAILED" -eq 0 ] || { echo "" >&2; echo "❌ 배포가 한 세트가 아니다." >&2; exit 1; }
+
+        echo ""
+        echo "   배포본 fingerprint (관측소 manifest 용):"
+        echo "     tool_sha256=$WANT_BIN"
+        echo "     tool_vcs_revision=$HEAD_SHA"
+        echo "     tool_vcs_modified=false"
         echo ""
         echo "   agent-config 의 SKILL.md 는 git 추적 대상이다 — 커밋은 GLG 가 한다."
         ;;
@@ -139,14 +184,16 @@ case "${1:-}" in
             "$LIFETRACT" status
 
             # import 가 스트림을 잃었으면 여기서 멈춘다 (AGENTS.md §3.5 5항).
-            # DB 는 만들어졌지만 성공이 아니다 — 조용히 다음 줄로 넘어가는 것이
-            # 2026-07-14 에 stress 27,598 행을 죽인 채로 배포할 뻔한 그 침묵이다.
+            # 운영 DB 는 승격되지 않았으니 조회는 여전히 직전의 성한 DB 를 읽는다.
+            # 조용히 다음 줄로 넘어가는 것이 2026-07-14 에 stress 27,598 행을 죽인 채로
+            # 배포할 뻔한 그 침묵이다.
             if printf '%s' "$IMPORT_OUT" | grep -q '"status": "warning"'; then
                 echo ""
-                echo "❌ import 가 스트림을 잃었다:"
-                printf '%s' "$IMPORT_OUT" | grep -E '^\s+"[a-z_]+: ' || true
+                echo "❌ import 가 성하지 않다:"
+                printf '%s' "$IMPORT_OUT" | grep -E '^\s+"[a-z_]+: |ledger|untouched' || true
                 echo ""
-                echo "   DB 는 만들어졌지만 믿지 마라. export zip 이 온전한지 먼저 봐라."
+                echo "   운영 DB 는 그대로다 (승격 안 됨) — 조회는 직전의 성한 DB 를 읽는다."
+                echo "   export zip 이 온전한지 먼저 봐라. 후보 DB 는 candidate_path 에 남아 있다."
                 exit 1
             fi
         else
