@@ -59,8 +59,9 @@ Automatically: moves Samsung Health folder → replaces aTimeLogger DB → rebui
   aTimeLogger SQLite ─────────────┼→ lifetract.db → JSON API
                                   │
 lifetract <command>               │
-  DB exists? → SQLite query (~90ms)
-  No DB?     → CSV fallback (~300ms)
+  DB exists? → all commands: SQLite query (~90ms)
+  No DB?     → sleep/steps/heart/stress/exercise: CSV fallback (~300ms)
+             → time/timeline/today/read: error + exit 1 (aTimeLogger has no CSV)
 ```
 
 ### DB Tables
@@ -107,6 +108,8 @@ lifetract <command>               │
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--days N` | 7 | Exactly N calendar days including today (`1` = today) |
+| `--from YYYY-MM-DD` | — | Inclusive start; with `--days N`: `[from, from+N)`; all three range flags: exit 1 |
+| `--to YYYY-MM-DD` | — | Exclusive end; with `--days N`: `[to-N, to)`; unknown/duplicate flags: exit 1 |
 | `--data-dir DIR` | `~/repos/gh/self-tracking-data` | Data root |
 | `--shealth-dir DIR` | Auto-detect latest | Samsung Health directory |
 | `--summary` | false | Summary mode |
@@ -168,7 +171,7 @@ lifetract/
     ├── query.go        # Query commands (DB↔CSV routing)
     ├── timeline.go     # Timeline builder
     ├── read.go         # Denote ID lookup
-    └── *_test.go       # 47 tests, 68% coverage
+    └── *_test.go       # 133 top-level tests + vet/race/TZ gates
 ```
 
 ---
@@ -189,7 +192,8 @@ lifetract/
 | 2025-10-06 | 183,635 | 33MB | ~2025-10 (77 CSVs) | ~2025-10 (13,102 intervals) | Initial build |
 | 2026-03-10 | 198,030 | 36MB | ~2026-03 (78 CSVs) | ~2026-03 (13,918 intervals) | +14,395 rows, 5 months added |
 | 2026-05-19 | 198,547 | 36MB | ~2026-05-18 (79 CSVs) | ~2026-05-18 (14,331 intervals) | +517 rows; HA 라이브 (5/17~) 합류 — DB 가 SSOT, HA 가 인터페이스 |
+| 2026-07-14 | 202,479 | ~38MB | mostly 2026-07-13; steps 2026-07-14 | 2026-07-13 (14,617 intervals) | HRV 빈 스트림 은퇴; sentinel 14행 거부; 9년치 steps 날짜축 복원 (3,381행 = 3,381일) |
 
 ---
 
-**Author**: [@junghanacs](https://github.com/junghan0611) · Apache 2.0
+**Author**: [@junghan0611](https://github.com/junghan0611) · Apache 2.0

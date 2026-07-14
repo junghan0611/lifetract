@@ -7,18 +7,18 @@ denotecli(정성: 노트/저널) + lifetract(정량: 건강/시간) → 같은 D
 
 ## Phase 1 — Samsung Health CSV ✅
 
-- [x] CSV 파서 8종 (sleep, sleep_stage, heart_rate, steps, stress, exercise, weight, hrv)
+- [x] CSV 파서 7종 활성 (sleep, sleep_stage, heart_rate, steps, stress, exercise, weight). HRV는 export에 `rmssd`가 없어 빈 스트림으로 판명되어 2026-07-14 은퇴
 - [x] timeline, today, read, status 커맨드
 - [x] Denote ID 체계 (Day + Event level)
 - [x] flake.nix (CGO_ENABLED=0 정적 빌드)
-- [x] SKILL.md, run.sh (pi-skills 배포)
-- [x] 47 tests, 68% coverage
+- [x] agent-config `skills/lifetract`가 스킬 SSOT; 본 repo `run.sh`는 코드 빌드/로컬 바이너리 배포
+- [x] 133 top-level tests + vet/race/TZ gates
 
 ## Phase 2 — SQLite DB ✅
 
 - [x] modernc.org/sqlite (pure Go, CGO 불필요)
 - [x] `lifetract import --exec`: CSV+aTimeLogger → lifetract.db (33MB, 183,635 rows, 1.5초)
-- [x] DB first / CSV fallback 전략
+- [x] DB first; 개별 Samsung 명령만 CSV fallback. `time`/`timeline`/`today`/`read`는 DB 없으면 exit 1
 - [x] aTimeLogger 파싱 (18 카테고리, 13,102 intervals)
 - [x] `time` 커맨드 작동 (aTimeLogger 카테고리별 일별 조회)
 - [x] 모든 커맨드 DB 쿼리 전환 (timeline 3x 빠름)
