@@ -4,13 +4,14 @@
 
 ---
 
-# NOW — steps 시간축 hardfix 닫힘 (2026-07-14 KST)
+# NOW — steps 시간축 hardfix 닫힘 · ship 완료 (2026-07-14 KST)
 
 - **Stem:** 숫자를 읽지 못한 자리가 다른 날짜·0·합계로 둔갑하지 않게 하고, 같은 사실은
   DB/CSV 어느 표면에서도 같은 값으로 답한다.
-- **Current:** `steps_daily` 날짜축 수리 + 독립 재검수 + 문서/스킬 정합 완료. 본 handoff를
-  담은 로컬 커밋을 기준으로 `./run.sh deploy`와 agent-config `setup:build`까지 반영한다.
-  **push는 없음.**
+- **Current:** `steps_daily` 날짜축 수리 + 독립 재검수 + 문서/스킬 정합 **전부 닫히고
+  푸시됨** (`23d095d`). 고친 코드로 재빌드한 운영 원장도 `self-tracking-data`에 올렸다
+  (`f95693f62`, 202,479행 · steps 3,381일 · rejected 6). agent-config 스킬 면도 동기
+  (`ddd3664`). **이 판에 남은 커밋 없음.**
 - **닫은 구멍:** `day_time` 문자열/epoch-ms 공용 판독 · `create_time` 폴백 삭제 · 최신
   `update_time` dedupe · 동률 충돌/미래 날짜 거부 · 날짜 UNIQUE · DB `SUM` 제거 ·
   `--days N`을 모든 조합에서 오늘 포함 정확히 N일로 통일.
@@ -21,7 +22,8 @@
   날짜 누락/초과/값 불일치 0 · `day_time_ms=0` 0 · UNIQUE index 확인.
 - **골든:** 2017-03-04=2,278 · 2025-07-16=6,335 · 07-17=7,685 ·
   07-20=909 · 2026-07-13=17,715 · 07-14=3,187.
-- **Next:** push 판단만 GLG 몫. 새 기능 전에 `timeline/collect.py` provenance 연결로 복귀.
+- **Next:** 새 기능(§A 새 sleep 파일군) 전에 **관측소 `junghan0611/timeline/collect.py`
+  provenance 연결**로 복귀 — 아래 "남은 것" 참조. **본 리포 작업이 아니다.**
 - **Do not touch:** HRV는 은퇴 상태 유지. HA `KindHRV`는 별도 라이브 센서라 그대로 둔다.
 
 ## 이번 판에서 닫은 것 (독립 검수 발견)
@@ -75,7 +77,8 @@ not a zero”, `lifetract/{helpers,import_exec,import_ledger,db_query}.go`,
 
 ## Do not touch
 
-운영 `self-tracking-data/lifetract.db` (검증은 전부 **사본**으로 했다), **push는 GLG 판단.**
+운영 `self-tracking-data/lifetract.db` — 검증은 전부 **사본**으로 한다. 승격된 원장은
+커밋됨(`f95693f62`); 직전 판본 백업은 스크래치패드의 `lifetract.db.bak-preHEAD`.
 
 # LEDGER — 오늘 닫힌 경로와 과거 맥락
 
@@ -83,7 +86,7 @@ not a zero”, `lifetract/{helpers,import_exec,import_ledger,db_query}.go`,
 
 **`import` 가 스트림을 통째로 잃고도 `"ok"` 라고 하던 자리를 닫았다.** 오늘 아침
 stress 27,598 → 0 을 잡은 건 테스트가 아니라 *사람 눈에 띈 총 행수* 였다 (203,539 →
-175,941). 그 눈을 도구 안으로 넣었다. **작업 트리에만 있음 — 커밋·푸시는 GLG.**
+175,941). 그 눈을 도구 안으로 넣었다. **커밋·푸시 완료.**
 
 - [x] **`import_ledger.go`** — 직전 import 행수를 `import_log` 원장에서 읽어 대조.
       `status: ok|warning`, 스트림별 `empty`/`shrunk` + `prev_rows`/`delta`,
@@ -158,17 +161,18 @@ stress 27,598 → 0 을 잡은 건 테스트가 아니라 *사람 눈에 띈 총
 
 ### 남은 것
 
-- **관측소 쪽 (내 리포 아님)**: `timeline/collect.py` 의 manifest 에 lifetract fingerprint
+- **관측소 쪽 (내 리포 아님 — `~/repos/gh/junghan0611`)**: `timeline/collect.py` 의
+  manifest 에 lifetract fingerprint
   (`tool_sha256` / `tool_vcs_revision` / `tool_vcs_modified`) 추가. `code_sha256` 은
   collector 파일 하나만 고정하므로 **어느 lifetract 바이너리로 뽑았는지 snapshot 에
   안 남는다.** 첫 public projection 전에 닫아야 한다. deploy 가 그 세 값을 출력한다.
 - **프루닝 안 함** (검산 발견 3) — 의도. 오래된 run 을 자르면 죽은 스트림의 마지막 비영
   행수가 날아가고, 그게 경고를 계속 울리는 근거다. 잊는 원장은 침묵이다.
 
-## 🔶 커밋 대기 — 빈 것과 배포면 (2026-07-14, agent-config 검수건)
+## ✅ 닫힘 — 빈 것과 배포면 (2026-07-14, agent-config 검수건)
 
 agent-config 매니저가 스킬 면을 검수하며 결함 둘 + GLG 결정 하나를 보냈다. 셋 다 닫았다.
-**SKILL.md 수정은 agent-config 작업 트리에 남겨뒀다 — 커밋은 그쪽 매니저가 한다.**
+**SKILL.md 수정은 agent-config 쪽에서 커밋·푸시됨** (`ddd3664`).
 
 - [x] **빈 창이 `null` 이었다** — `exercise --days 30` 이 `null` 을 내서
       `for x in json.loads(out)` 이 `TypeError` 로 죽었다. **영(零)을 구멍으로 내보내면
