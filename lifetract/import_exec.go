@@ -110,12 +110,19 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	}
 
 	// Promote only a sound run. A warning means the live DB — which still has the
-	// stream this run lost — stays exactly where it is. Nothing to protect (no live
-	// DB yet) is the one case where a warning still promotes: some data beats none,
-	// and the warning is on the record either way.
+	// stream this run lost — stays exactly where it is.
+	//
+	// With no live DB to protect, a warning still promotes: some data beats none,
+	// and the warning is on the record either way. But "some data" has to be some.
+	// A first run where every source failed to read used to promote an empty file
+	// into the live path, and from then on every query answered [] — the tool
+	// reporting a life with nothing in it because it could not open a single CSV.
+	// That is the "I could not look" / "there is nothing" collapse again, in the
+	// one place where it becomes permanent.
 	live := dbExists(cfg)
+	empty := result.TotalRows == 0
 	switch {
-	case result.Status == statusOK || !live:
+	case result.Status == statusOK || (!live && !empty):
 		if err := promoteDB(candidate, path); err != nil {
 			return nil, fmt.Errorf("promote: %w", err)
 		}
@@ -123,8 +130,13 @@ func execImport(cfg *Config) (*ImportResult, error) {
 	default:
 		result.DBPath = path // untouched, and still the good one
 		result.CandidatePath = candidate
-		result.warn("live DB left untouched — this run was not promoted. " +
-			"The candidate is kept for inspection: " + candidate)
+		if !live {
+			result.warn("nothing was imported — an empty database is not promoted. " +
+				"Check the export before trusting any query: " + candidate)
+		} else {
+			result.warn("live DB left untouched — this run was not promoted. " +
+				"The candidate is kept for inspection: " + candidate)
+		}
 	}
 
 	if info, _ := os.Stat(result.promotedPath()); info != nil {
@@ -144,13 +156,25 @@ func (r *ImportResult) promotedPath() string {
 	return r.DBPath
 }
 
-// promoteDB swaps the candidate into place. The old sidecars must go with the old
-// file — a -wal left behind belongs to a database that no longer exists, and SQLite
-// would read it as if it did.
+// promoteDB swaps the candidate into place.
+//
+// The live DB is never deleted first. It used to be — remove, then rename — which
+// meant a rename that failed left nothing at all where the sound database had been.
+// The whole point of building a candidate is that the good file survives a bad run,
+// and a promotion that can destroy it on the way in gives that back.
+//
+// The sidecars are a different matter and must go first: after the rename they
+// would sit beside a database that never wrote them, and SQLite would replay them
+// as if it had. They belong to the file being replaced, and that file is on its
+// way out either way.
 func promoteDB(candidate, path string) error {
-	if err := removeDB(path); err != nil {
-		return err
+	for _, side := range []string{path + "-wal", path + "-shm"} {
+		if err := os.Remove(side); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
+	// rename(2) replaces the destination atomically. The live DB is never unlinked
+	// on its own, so a failure here leaves it exactly where it was.
 	return os.Rename(candidate, path)
 }
 
@@ -225,7 +249,30 @@ type TableResult struct {
 // record judges one stream against the ledger, files it in the result, and writes
 // it back to the ledger — including a zero. A zero that goes unrecorded is a loss
 // that goes unnoticed next time.
-func (r *ImportResult) record(base *importBaseline, name, source string, rows, rejected int, err error, db *sql.DB, sourcePath string) {
+func (r *ImportResult) record(base *importBaseline, name, source string, offered, rejected int, err error, db *sql.DB, sourcePath string) {
+	// What the importer handed over is a claim; what the table holds is the fact.
+	// They agree today, and nothing enforced that they must — a constraint, a
+	// duplicate id or a failed write would have left the ledger recording rows the
+	// DB never held, and the loss guard measures the next import against exactly
+	// this number.
+	rows := offered
+	if err == nil {
+		landed, cerr := tableCount(db, name)
+		switch {
+		case cerr != nil:
+			// We cannot vouch for this stream, so the run does not get promoted on
+			// the strength of a number we could not check.
+			r.warn(fmt.Sprintf("%s: could not count the rows that landed — not promoting: %v", name, cerr))
+		default:
+			rows = landed
+			if landed != offered {
+				r.Rejected = append(r.Rejected, fmt.Sprintf(
+					"%s: %s rows offered, %s landed — the DB dropped %s (duplicate ids, or a constraint)",
+					name, comma(offered), comma(landed), comma(offered-landed)))
+			}
+		}
+	}
+
 	status, warning := base.classify(name, rows, rejected, err)
 
 	t := TableResult{Name: name, Rows: rows, Status: status, Rejected: rejected}
@@ -254,9 +301,84 @@ func (r *ImportResult) record(base *importBaseline, name, source string, rows, r
 	// The ledger entry is not bookkeeping we can afford to lose. A row that fails
 	// to land is a stream this DB cannot vouch for next time — so the run says so,
 	// and is not promoted on the strength of a record it failed to write.
-	if err := logImport(db, r.runID, r.runAt, source, name, rows, sourcePath); err != nil {
+	if err := logImport(db, r.runID, r.runAt, source, name, rows, rejected, sourcePath); err != nil {
 		r.warn(fmt.Sprintf("%s: ledger write failed — not promoting: %v", name, err))
 	}
+}
+
+// --- writing rows without losing the errors ---
+
+// inserter is a transaction that refuses to drop an error on the floor.
+//
+// Every importer used to read `tx, _ := db.Begin()`, `stmt, _ := tx.Prepare(...)`,
+// bare `stmt.Exec(...)`, bare `tx.Commit()` — and then `count++` regardless. So a
+// row that never landed still counted as imported, and a transaction that failed
+// to commit still returned nil. The ledger recorded those numbers as fact and the
+// loss guard measured the next import against them: a guard reading a number the
+// import made up.
+//
+// The first failure is remembered and every later exec is a no-op, so a broken
+// transaction can never be committed by a loop that did not check.
+type inserter struct {
+	tx     *sql.Tx
+	stmt   *sql.Stmt
+	err    error
+	landed int // rows the DB actually took (INSERT OR IGNORE reports 0 for a dup)
+}
+
+func newInserter(db *sql.DB, query string) (*inserter, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	stmt, err := tx.Prepare(query)
+	if err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("prepare: %w", err)
+	}
+	return &inserter{tx: tx, stmt: stmt}, nil
+}
+
+func (in *inserter) exec(args ...interface{}) {
+	if in.err != nil {
+		return
+	}
+	res, err := in.stmt.Exec(args...)
+	if err != nil {
+		in.err = fmt.Errorf("insert: %w", err)
+		return
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		in.err = fmt.Errorf("rows affected: %w", err)
+		return
+	}
+	in.landed += int(n)
+}
+
+// done commits, or rolls back and reports whatever went wrong on the way.
+func (in *inserter) done() (int, error) {
+	defer in.stmt.Close()
+	if in.err != nil {
+		in.tx.Rollback()
+		return 0, in.err
+	}
+	if err := in.tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return in.landed, nil
+}
+
+// tableCount is the only honest answer to "how many rows are in this stream": ask
+// the database, after the commit. Counting the rows we handed it counts our
+// intentions, and the ledger is not a record of intentions.
+func tableCount(db *sql.DB, table string) (int, error) {
+	var n int
+	// table is one of our own constant names, never caller input.
+	if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // --- Samsung Health importers ---
@@ -293,11 +415,12 @@ func importSleep(db *sql.DB, cfg *Config) (int, int, error) {
 		return 0, 0, err
 	}
 
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO sleep
+	in, err := newInserter(db, `INSERT OR IGNORE INTO sleep
 		(id, uuid, start_time, end_time, duration_min, sleep_score, efficiency, total_light_min, total_rem_min)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	defer stmt.Close()
+	if err != nil {
+		return 0, 0, err
+	}
 
 	count, rejected := 0, 0
 	for _, rec := range records {
@@ -323,7 +446,7 @@ func importSleep(db *sql.DB, cfg *Config) (int, int, error) {
 		dur := end.Sub(start).Minutes()
 		uuid := rec["com.samsung.health.sleep.datauuid"]
 
-		stmt.Exec(
+		in.exec(
 			denoteID(start),
 			uuid,
 			startStr,
@@ -336,7 +459,9 @@ func importSleep(db *sql.DB, cfg *Config) (int, int, error) {
 		)
 		count++
 	}
-	tx.Commit()
+	if _, err := in.done(); err != nil {
+		return 0, 0, err
+	}
 	return count, rejected, nil
 }
 
@@ -351,11 +476,12 @@ func importSleepStage(db *sql.DB, cfg *Config) (int, int, error) {
 		return 0, 0, err
 	}
 
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO sleep_stage
+	in, err := newInserter(db, `INSERT OR IGNORE INTO sleep_stage
 		(id, sleep_uuid, start_time, end_time, stage)
 		VALUES (?, ?, ?, ?, ?)`)
-	defer stmt.Close()
+	if err != nil {
+		return 0, 0, err
+	}
 
 	count, rejected := 0, 0
 	for _, rec := range records {
@@ -382,10 +508,12 @@ func importSleepStage(db *sql.DB, cfg *Config) (int, int, error) {
 			id = denoteID(start) + "_" + stageStr
 		}
 
-		stmt.Exec(id, sleepUUID, startStr, endStr, parseInt(stageStr))
+		in.exec(id, sleepUUID, startStr, endStr, parseInt(stageStr))
 		count++
 	}
-	tx.Commit()
+	if _, err := in.done(); err != nil {
+		return 0, 0, err
+	}
 	return count, rejected, nil
 }
 
@@ -400,9 +528,10 @@ func importHeartRate(db *sql.DB, cfg *Config) (int, int, error) {
 		return 0, 0, err
 	}
 
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO heart_rate (id, start_time, heart_rate) VALUES (?, ?, ?)`)
-	defer stmt.Close()
+	in, err := newInserter(db, `INSERT OR IGNORE INTO heart_rate (id, start_time, heart_rate) VALUES (?, ?, ?)`)
+	if err != nil {
+		return 0, 0, err
+	}
 
 	count, rejected := 0, 0
 	for _, rec := range records {
@@ -431,10 +560,12 @@ func importHeartRate(db *sql.DB, cfg *Config) (int, int, error) {
 			id = denoteID(start)
 		}
 
-		stmt.Exec(id, startStr, hr)
+		in.exec(id, startStr, hr)
 		count++
 	}
-	tx.Commit()
+	if _, err := in.done(); err != nil {
+		return 0, 0, err
+	}
 	return count, rejected, nil
 }
 
@@ -449,10 +580,11 @@ func importStepsDaily(db *sql.DB, cfg *Config) (int, int, error) {
 		return 0, 0, err
 	}
 
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO steps_daily
+	in, err := newInserter(db, `INSERT OR IGNORE INTO steps_daily
 		(id, date, day_time_ms, count, distance, calorie) VALUES (?, ?, ?, ?, ?, ?)`)
-	defer stmt.Close()
+	if err != nil {
+		return 0, 0, err
+	}
 
 	count, rejected := 0, 0
 	for _, rec := range records {
@@ -506,12 +638,14 @@ func importStepsDaily(db *sql.DB, cfg *Config) (int, int, error) {
 			id = uuid // use original UUID to avoid dedup issues
 		}
 
-		stmt.Exec(id, date, dayTimeMs, steps,
+		in.exec(id, date, dayTimeMs, steps,
 			parseFloat(rec["distance"]),
 			parseFloat(rec["calorie"]))
 		count++
 	}
-	tx.Commit()
+	if _, err := in.done(); err != nil {
+		return 0, 0, err
+	}
 	return count, rejected, nil
 }
 
@@ -526,10 +660,11 @@ func importStress(db *sql.DB, cfg *Config) (int, int, error) {
 		return 0, 0, err
 	}
 
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO stress
+	in, err := newInserter(db, `INSERT OR IGNORE INTO stress
 		(id, start_time, score, min_score, max_score) VALUES (?, ?, ?, ?, ?)`)
-	defer stmt.Close()
+	if err != nil {
+		return 0, 0, err
+	}
 
 	count, rejected := 0, 0
 	for _, rec := range records {
@@ -556,13 +691,15 @@ func importStress(db *sql.DB, cfg *Config) (int, int, error) {
 			id = denoteID(start)
 		}
 
-		stmt.Exec(id, startStr,
+		in.exec(id, startStr,
 			parseFloat(scoreStr),
 			parseFloat(rec["min"]),
 			parseFloat(rec["max"]))
 		count++
 	}
-	tx.Commit()
+	if _, err := in.done(); err != nil {
+		return 0, 0, err
+	}
 	return count, rejected, nil
 }
 
@@ -579,11 +716,12 @@ func importExercise(db *sql.DB, cfg *Config) (int, int, error) {
 		return 0, 0, err
 	}
 
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO exercise
+	in, err := newInserter(db, `INSERT OR IGNORE INTO exercise
 		(id, start_time, end_time, exercise_type, duration_ms, calorie, mean_hr, max_hr, distance)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	defer stmt.Close()
+	if err != nil {
+		return 0, 0, err
+	}
 
 	count, rejected := 0, 0
 	for _, rec := range records {
@@ -612,7 +750,7 @@ func importExercise(db *sql.DB, cfg *Config) (int, int, error) {
 			typeCode = rec["activity_type"]
 		}
 
-		stmt.Exec(id, startStr,
+		in.exec(id, startStr,
 			rec["com.samsung.health.exercise.end_time"],
 			parseInt(typeCode),
 			parseInt(rec["com.samsung.health.exercise.duration"]),
@@ -622,7 +760,9 @@ func importExercise(db *sql.DB, cfg *Config) (int, int, error) {
 			parseFloat(rec["com.samsung.health.exercise.total_distance"]))
 		count++
 	}
-	tx.Commit()
+	if _, err := in.done(); err != nil {
+		return 0, 0, err
+	}
 	return count, rejected, nil
 }
 
@@ -637,10 +777,11 @@ func importWeight(db *sql.DB, cfg *Config) (int, int, error) {
 		return 0, 0, err
 	}
 
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO weight
+	in, err := newInserter(db, `INSERT OR IGNORE INTO weight
 		(id, start_time, weight, body_fat, muscle_mass) VALUES (?, ?, ?, ?, ?)`)
-	defer stmt.Close()
+	if err != nil {
+		return 0, 0, err
+	}
 
 	count, rejected := 0, 0
 	for _, rec := range records {
@@ -664,13 +805,15 @@ func importWeight(db *sql.DB, cfg *Config) (int, int, error) {
 			id = denoteID(start)
 		}
 
-		stmt.Exec(id, startStr,
+		in.exec(id, startStr,
 			parseFloat(rec["weight"]),
 			parseFloat(rec["body_fat"]),
 			parseFloat(rec["muscle_mass"]))
 		count++
 	}
-	tx.Commit()
+	if _, err := in.done(); err != nil {
+		return 0, 0, err
+	}
 	return count, rejected, nil
 }
 
@@ -685,9 +828,10 @@ func importHRV(db *sql.DB, cfg *Config) (int, int, error) {
 		return 0, 0, err
 	}
 
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`INSERT OR IGNORE INTO hrv (id, start_time, hrv_rmssd) VALUES (?, ?, ?)`)
-	defer stmt.Close()
+	in, err := newInserter(db, `INSERT OR IGNORE INTO hrv (id, start_time, hrv_rmssd) VALUES (?, ?, ?)`)
+	if err != nil {
+		return 0, 0, err
+	}
 
 	count, rejected := 0, 0
 	for _, rec := range records {
@@ -720,10 +864,12 @@ func importHRV(db *sql.DB, cfg *Config) (int, int, error) {
 			id = denoteID(start)
 		}
 
-		stmt.Exec(id, startStr, parseFloat(hrvStr))
+		in.exec(id, startStr, parseFloat(hrvStr))
 		count++
 	}
-	tx.Commit()
+	if _, err := in.done(); err != nil {
+		return 0, 0, err
+	}
 	return count, rejected, nil
 }
 
@@ -740,26 +886,38 @@ func importATimeLogger(db *sql.DB, cfg *Config) (int, int, error) {
 	}
 	defer srcDB.Close()
 
-	// Import categories
+	// Categories. A scan that fails here used to be ignored, which imported a
+	// category with a zero id and a blank name — and the intervals that pointed at
+	// it lost their name silently.
 	rows, err := srcDB.Query(`SELECT id, name, color, is_group, parent_id FROM activity_type`)
 	if err != nil {
 		return 0, 0, err
 	}
 	defer rows.Close()
 
-	tx, _ := db.Begin()
-	catStmt, _ := tx.Prepare(`INSERT OR REPLACE INTO atl_category (id, name, color, is_group, parent_id) VALUES (?, ?, ?, ?, ?)`)
-
+	cats, err := newInserter(db, `INSERT OR REPLACE INTO atl_category (id, name, color, is_group, parent_id) VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, 0, err
+	}
 	for rows.Next() {
 		var id, isGroup, parentID int
 		var name string
 		var color sql.NullInt64
-		rows.Scan(&id, &name, &color, &isGroup, &parentID)
-		catStmt.Exec(id, name, color.Int64, isGroup, parentID)
+		if err := rows.Scan(&id, &name, &color, &isGroup, &parentID); err != nil {
+			cats.done()
+			return 0, 0, fmt.Errorf("read category: %w", err)
+		}
+		cats.exec(id, name, color.Int64, isGroup, parentID)
 	}
-	catStmt.Close()
+	if err := rows.Err(); err != nil {
+		cats.done()
+		return 0, 0, fmt.Errorf("read categories: %w", err)
+	}
+	if _, err := cats.done(); err != nil {
+		return 0, 0, err
+	}
 
-	// Import intervals (from time_interval2 which has the actual data)
+	// Intervals (time_interval2 holds the actual blocks).
 	iRows, err := srcDB.Query(`SELECT id, guid, start, finish, comment, activity_type_id, is_deleted
 		FROM time_interval2`)
 	if err != nil {
@@ -767,25 +925,38 @@ func importATimeLogger(db *sql.DB, cfg *Config) (int, int, error) {
 	}
 	defer iRows.Close()
 
-	intStmt, _ := tx.Prepare(`INSERT OR IGNORE INTO atl_interval
+	in, err := newInserter(db, `INSERT OR IGNORE INTO atl_interval
 		(id, guid, start_time, end_time, comment, category_id, is_deleted)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, 0, err
+	}
 
 	count, rejected := 0, 0
 	for iRows.Next() {
 		var id, start, finish, catID, isDeleted int
 		var guid, comment sql.NullString
-		iRows.Scan(&id, &guid, &start, &finish, &comment, &catID, &isDeleted)
+		if err := iRows.Scan(&id, &guid, &start, &finish, &comment, &catID, &isDeleted); err != nil {
+			in.done()
+			return 0, 0, fmt.Errorf("read interval: %w", err)
+		}
 		// aTimeLogger stores unix seconds; a zero start is epoch, not a block.
 		if isSentinelTime(time.Unix(int64(start), 0)) {
 			rejected++
 			continue
 		}
-		intStmt.Exec(id, guid.String, start, finish, comment.String, catID, isDeleted)
+		in.exec(id, guid.String, start, finish, comment.String, catID, isDeleted)
 		count++
 	}
-	intStmt.Close()
-	tx.Commit()
+	// An iteration that stopped early read fewer blocks than the phone holds, and
+	// the count would have looked like a perfectly ordinary smaller number.
+	if err := iRows.Err(); err != nil {
+		in.done()
+		return 0, 0, fmt.Errorf("read intervals: %w", err)
+	}
+	if _, err := in.done(); err != nil {
+		return 0, 0, err
+	}
 
 	return count, rejected, nil
 }

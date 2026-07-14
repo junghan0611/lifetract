@@ -99,6 +99,7 @@ func TestExplainedShrinkStillPromotes(t *testing.T) {
 	if first.Status != statusOK {
 		t.Fatalf("first import: %q (%v)", first.Status, first.Warnings)
 	}
+	legacyLedger(t, cfg)
 	before := stream(t, first, "heart_rate").Rows
 
 	// Now the filter exists. The stream loses exactly the row it refused.
@@ -196,4 +197,31 @@ func withOldBinary(t *testing.T, fn func()) {
 	sentinelFloor = time.Date(1900, 1, 1, 0, 0, 0, 0, KST)
 	defer func() { sentinelFloor = orig }()
 	fn()
+}
+
+// legacyLedger rewrites import_log without the rows_rejected column — the shape
+// the live DB's ledger actually has, since it was written by a build that had no
+// reject policy at all.
+//
+// Lowering the floor alone is not enough to imitate that build: this code would
+// still write rows_rejected = 0, and 0 is a *claim* ("refused nothing") where the
+// old build made none. The migration hinges on that difference, so the fixture has
+// to reproduce the absence, not a zero standing in for it.
+func legacyLedger(t *testing.T, cfg *Config) {
+	t.Helper()
+	db, err := openDB(dbPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+		CREATE TABLE il_legacy AS
+			SELECT id, import_id, imported_at, source, table_name, rows_imported, source_path
+			FROM import_log;
+		DROP TABLE import_log;
+		ALTER TABLE il_legacy RENAME TO import_log;
+	`); err != nil {
+		t.Fatal(err)
+	}
 }

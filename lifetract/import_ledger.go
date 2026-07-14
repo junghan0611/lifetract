@@ -50,16 +50,26 @@ type ledgerRow struct {
 	Source     string
 	Table      string
 	Rows       int
+	// Rejected is NULL for any run written before the reject policy existed. Not
+	// zero — NULL. "This build refused nothing" and "this build could not refuse
+	// anything" are different facts, and collapsing them into 0 is what would let
+	// the migration allowance renew itself on every future import.
+	Rejected   sql.NullInt64
 	SourcePath string
 }
 
 // importBaseline is what the previous imports know, and this import must answer to.
 type importBaseline struct {
-	Exists     bool
-	ReadErr    string            // the ledger was there and could not be read
-	At         string            // when the previous import ran
-	MaxRunID   int               // highest import_id on record
-	Prev       map[string]int    // rows at the previous import (zeros included)
+	Exists   bool
+	ReadErr  string         // the ledger was there and could not be read
+	At       string         // when the previous import ran
+	MaxRunID int            // highest import_id on record
+	Prev     map[string]int // rows at the previous import (zeros included)
+	// PrePolicy marks a stream whose previous count was taken by a build with no
+	// reject filter — so Prev still includes the placeholder rows. Only such a
+	// stream may explain a shrink with this run's rejects, and only once: after
+	// that import the ledger carries a reject count and the allowance is gone.
+	PrePolicy  map[string]bool
 	LastGood   map[string]int    // most recent NON-zero count on record
 	LastGoodAt map[string]string // when that count was recorded
 	History    []ledgerRow
@@ -101,6 +111,7 @@ func (b *importBaseline) numberRuns() {
 func readBaseline(path string) *importBaseline {
 	b := &importBaseline{
 		Prev:       map[string]int{},
+		PrePolicy:  map[string]bool{},
 		LastGood:   map[string]int{},
 		LastGoodAt: map[string]string{},
 	}
@@ -119,14 +130,19 @@ func readBaseline(path string) *importBaseline {
 	}
 	defer db.Close()
 
-	rows, err := db.Query(`SELECT import_id, imported_at, source, table_name, rows_imported, source_path
+	// Older ledgers are missing columns, one generation at a time. Each fallback
+	// selects a literal in place of the column it lacks — NULL for rows_rejected,
+	// which is precisely the claim "this run predates the reject policy". Falling
+	// through to "no baseline" instead would be the worst outcome available: the
+	// import would call itself the first one and notice nothing.
+	rows, err := db.Query(`SELECT import_id, imported_at, source, table_name, rows_imported, rows_rejected, source_path
 		FROM import_log ORDER BY id`)
 	if err != nil {
-		// A DB from a build with no import_id column. The runs are still in there,
-		// in id order — numberRuns reconstructs them. Falling through to "no
-		// baseline" here would be the worst outcome available: the import would
-		// call itself the first one and notice nothing.
-		rows, err = db.Query(`SELECT 0, imported_at, source, table_name, rows_imported, source_path
+		rows, err = db.Query(`SELECT import_id, imported_at, source, table_name, rows_imported, NULL, source_path
+			FROM import_log ORDER BY id`)
+	}
+	if err != nil {
+		rows, err = db.Query(`SELECT 0, imported_at, source, table_name, rows_imported, NULL, source_path
 			FROM import_log ORDER BY id`)
 		if err != nil {
 			b.ReadErr = err.Error()
@@ -139,7 +155,7 @@ func readBaseline(path string) *importBaseline {
 		var r ledgerRow
 		var n sql.NullInt64
 		var sp sql.NullString
-		if err := rows.Scan(&r.ImportID, &r.ImportedAt, &r.Source, &r.Table, &n, &sp); err != nil {
+		if err := rows.Scan(&r.ImportID, &r.ImportedAt, &r.Source, &r.Table, &n, &r.Rejected, &sp); err != nil {
 			// Skipping the row would leave a baseline missing whichever stream
 			// failed to scan — and a stream missing from the baseline is a stream
 			// whose disappearance nobody notices. Half a ledger is worse than none,
@@ -153,6 +169,7 @@ func readBaseline(path string) *importBaseline {
 
 		// Rows arrive in id order, so the last write per stream is the newest.
 		b.Prev[r.Table] = r.Rows
+		b.PrePolicy[r.Table] = !r.Rejected.Valid
 		if r.Rows > 0 {
 			b.LastGood[r.Table] = r.Rows
 			b.LastGoodAt[r.Table] = r.ImportedAt
@@ -196,8 +213,8 @@ func carryForward(db *sql.DB, b *importBaseline) error {
 		return err
 	}
 	stmt, err := tx.Prepare(`INSERT INTO import_log
-		(import_id, imported_at, source, table_name, rows_imported, source_path)
-		VALUES (?, ?, ?, ?, ?, ?)`)
+		(import_id, imported_at, source, table_name, rows_imported, rows_rejected, source_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -205,7 +222,10 @@ func carryForward(db *sql.DB, b *importBaseline) error {
 	defer stmt.Close()
 
 	for _, r := range b.History {
-		if _, err := stmt.Exec(r.ImportID, r.ImportedAt, r.Source, r.Table, r.Rows, r.SourcePath); err != nil {
+		// r.Rejected is carried as it was found — NULL stays NULL. Writing 0 here
+		// would forge a policy the old run never had, and the forgery would look
+		// exactly like a clean migration on every future import.
+		if _, err := stmt.Exec(r.ImportID, r.ImportedAt, r.Source, r.Table, r.Rows, r.Rejected, r.SourcePath); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("carry %s (run %d): %w", r.Table, r.ImportID, err)
 		}
@@ -235,22 +255,37 @@ func (b *importBaseline) prevTotal() int {
 // number (prev_rows/delta on every stream) and warned about only against the
 // immediately previous import, where it is an event rather than an opinion.
 // classify judges one stream. rejected is how many rows this run refused on
-// purpose (placeholder timestamps), and it is the difference between a stream
-// that lost data and one the tool deliberately cleaned.
+// purpose (placeholder timestamps).
 //
-// Without it the first import after the sentinel filter lands would see
-// heart_rate go 64,555 → 64,541, call it shrunk, and refuse to promote — forever,
-// since the count can never climb back. The guard would have jammed the door it
-// was built to watch. So a shrink is a loss *unless the run can account for every
-// missing row itself*.
+// The reject filter sets a trap for itself. Refusing rows makes the stream shrink
+// against a baseline that counted them, and a shrink is what the loss guard
+// refuses to promote — so the very first import after the filter lands would jam
+// the door the guard was built to watch, permanently, since the count can never
+// climb back.
+//
+// The obvious escape — "a shrink no larger than what we rejected is fine" — is
+// worse than the jam. The placeholders never leave the export, so `rejected` comes
+// back at 14 on every future run, and 14 rows of real, silent loss are waved
+// through every import from then on. A reviewer found it in three runs:
+//
+//	run 1 (old build):  real 100 + 14 placeholders   → ledger says 114
+//	run 2 (this build): 100 kept, 14 rejected        → shrink of 14, explained ✓
+//	run 3:              10 REAL rows vanish          → shrink of 10 ≤ 14, "explained" ✗
+//
+// So the allowance is spent once, on the migration, and never renewed. A ledger
+// entry written before the policy existed (rows_rejected IS NULL) still counts the
+// placeholders, and only against such an entry may this run's rejects account for
+// the drop. Once a run records its rejects, the baseline is accepted-rows-only and
+// any shrink in accepted rows is a loss again — including a shrink that hides
+// under a sudden flood of rejects, because that flood costs accepted rows too.
 func (b *importBaseline) classify(name string, rows, rejected int, err error) (status, warning string) {
 	prev, hadPrev := b.Prev[name]
 	good, hadGood := b.LastGood[name]
 
-	// A drop no larger than what we refused is explained by the refusal. A drop
-	// beyond it is a real loss and still says so — the rejects do not become a
-	// blanket that hides one.
-	explained := hadPrev && rows < prev && prev-rows <= rejected
+	// rows + rejected is what the source still offers. Against a pre-policy
+	// baseline — which counted the placeholders as imported — that sum has to
+	// reach the old number, or something real went missing on top of the cleanup.
+	explained := hadPrev && b.PrePolicy[name] && rows < prev && rows+rejected >= prev
 
 	switch {
 	case err != nil:

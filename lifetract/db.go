@@ -158,6 +158,11 @@ var initSchema = func(db *sql.DB) error {
 		source TEXT NOT NULL,
 		table_name TEXT NOT NULL,
 		rows_imported INTEGER,
+		-- NULL means the run was written by a build with no reject policy, so
+		-- rows_imported still counts the placeholder rows. That distinction is
+		-- load-bearing: it is what limits the reject allowance to the single
+		-- migration run instead of renewing it forever. See classify().
+		rows_rejected INTEGER,
 		source_path TEXT
 	);
 
@@ -183,10 +188,11 @@ var initSchema = func(db *sql.DB) error {
 // The error is returned, not dropped. This table is the baseline every future
 // import is judged against; a write that fails here is a loss the next run cannot
 // see, and a silent one at that.
-func logImport(db *sql.DB, runID int, at, source, tableName string, rows int, sourcePath string) error {
-	_, err := db.Exec(`INSERT INTO import_log (import_id, imported_at, source, table_name, rows_imported, source_path)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		runID, at, source, tableName, rows, sourcePath)
+func logImport(db *sql.DB, runID int, at, source, tableName string, rows, rejected int, sourcePath string) error {
+	_, err := db.Exec(`INSERT INTO import_log
+		(import_id, imported_at, source, table_name, rows_imported, rows_rejected, source_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		runID, at, source, tableName, rows, rejected, sourcePath)
 	return err
 }
 
