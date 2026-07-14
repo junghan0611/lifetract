@@ -555,6 +555,24 @@ func TestStatusAlwaysCarriesWarnings(t *testing.T) {
 	}
 }
 
+// With no DB there is nothing to check, and an empty warnings list would say the
+// opposite: that three streams were examined and found current. The tool must not
+// be able to pass an examination it never sat.
+func TestNoDBIsNotACleanBillOfHealth(t *testing.T) {
+	result, err := cmdStatus(testConfig(7)) // csv mode: no DB in testdata
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := result.(*StatusResult).Database
+
+	if db.FreshnessChecked {
+		t.Error("freshness_checked = true with no DB — the check never ran")
+	}
+	if len(db.Warnings) == 0 {
+		t.Error("no DB and no warnings — silence reads as a clean bill of health")
+	}
+}
+
 // --- SKILL.md: import ---
 
 func TestCmdImport(t *testing.T) {

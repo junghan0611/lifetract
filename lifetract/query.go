@@ -48,10 +48,16 @@ type DBStatus struct {
 	LastSteps     string `json:"last_steps,omitempty"`
 	StaleDays     int    `json:"stale_days,omitempty"` // worst stream
 
+	// FreshnessChecked says whether the streams were examined at all. Without it,
+	// "warnings": [] means two different things — "examined, all current" and "not
+	// examined, because there is no DB" — and the second one wearing the first
+	// one's clothes is exactly the disease: a check that reports itself passing
+	// when it never ran. Read this before you read Warnings.
+	FreshnessChecked bool `json:"freshness_checked"`
+
 	// Never omitempty, never nil. A missing key cannot be told apart from an old
-	// binary that never checked; "warnings": [] is the positive claim that the
-	// streams were examined and found current. A check that can vanish when it
-	// passes is not a check.
+	// binary that never checked. [] is a claim, and it is only true when
+	// freshness_checked is true.
 	Warnings []string `json:"warnings"`
 }
 
@@ -60,19 +66,24 @@ type DBStatus struct {
 // that nothing happened.
 const staleAfterDays = 3
 
-// dbLastDate runs a query returning a single date string, or "" if unavailable.
-func dbLastDate(cfg *Config, query string) string {
+// dbLastDate runs a query returning a single date string.
+//
+// The error is returned, not folded into "". A corrupt file, a dropped table and
+// a stream that genuinely holds no rows all used to come back as the empty
+// string, and the caller reported all three as "no records in DB" — the freshness
+// check could fail and still look like a clean answer.
+func dbLastDate(cfg *Config, query string) (string, error) {
 	db, err := openDB(dbPath(cfg))
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer db.Close()
 
 	var date sql.NullString
 	if err := db.QueryRow(query).Scan(&date); err != nil {
-		return ""
+		return "", err
 	}
-	return date.String
+	return date.String, nil
 }
 
 func cmdStatus(cfg *Config) (interface{}, error) {
@@ -95,7 +106,12 @@ func cmdStatus(cfg *Config) (interface{}, error) {
 		dbSt.Mode = "db"
 		addDBFreshness(cfg, dbSt)
 	} else {
+		// No DB, so nothing was examined. Saying so is the point: an empty warnings
+		// list here used to read as a clean bill of health for streams no one looked
+		// at.
 		dbSt.Mode = "csv"
+		dbSt.Warnings = append(dbSt.Warnings,
+			"no DB — freshness was not checked; run 'lifetract import --exec'")
 	}
 
 	return &StatusResult{
@@ -110,40 +126,68 @@ func cmdStatus(cfg *Config) (interface{}, error) {
 // whole point: the Samsung export can stall while aTimeLogger keeps flowing, and
 // a check that only watched the feed that broke last time would miss it.
 func addDBFreshness(cfg *Config, st *DBStatus) {
-	st.LastTimeBlock = dbLastDate(cfg,
-		`SELECT DATE(MAX(start_time), 'unixepoch', '+9 hours') FROM atl_interval WHERE is_deleted = 0`)
-	st.LastSleep = dbLastDate(cfg, `SELECT DATE(MAX(start_time)) FROM sleep`)
-	st.LastSteps = dbLastDate(cfg, `SELECT MAX(date) FROM steps_daily`)
-
 	streams := []struct {
-		name, last, remedy string
+		name, query, remedy string
+		into                *string
 	}{
-		{"aTimeLogger", st.LastTimeBlock, "copy a fresh database.db3 from the phone, then 'lifetract import --exec'"},
-		{"Samsung sleep", st.LastSleep, "re-export Samsung Health from the phone, then 'lifetract import --exec'"},
-		{"Samsung steps", st.LastSteps, "re-export Samsung Health from the phone, then 'lifetract import --exec'"},
+		{"aTimeLogger",
+			`SELECT DATE(MAX(start_time), 'unixepoch', '+9 hours') FROM atl_interval WHERE is_deleted = 0`,
+			"copy a fresh database.db3 from the phone, then 'lifetract import --exec'",
+			&st.LastTimeBlock},
+		{"Samsung sleep",
+			`SELECT DATE(MAX(start_time)) FROM sleep`,
+			"re-export Samsung Health from the phone, then 'lifetract import --exec'",
+			&st.LastSleep},
+		{"Samsung steps",
+			`SELECT MAX(date) FROM steps_daily`,
+			"re-export Samsung Health from the phone, then 'lifetract import --exec'",
+			&st.LastSteps},
 	}
 
 	today := startOfDay(nowKST())
+	checked := true
+
 	for _, s := range streams {
-		if s.last == "" {
+		last, err := dbLastDate(cfg, s.query)
+		if err != nil {
+			// The check itself failed. That is not "the stream is empty", and it is
+			// not "the stream is current" — it is "I could not look", and it has to
+			// be the loudest of the three.
+			checked = false
+			st.Warnings = append(st.Warnings,
+				fmt.Sprintf("%s: freshness could not be read — %v", s.name, err))
+			continue
+		}
+		*s.into = last
+
+		if last == "" {
 			st.Warnings = append(st.Warnings,
 				fmt.Sprintf("%s: no records in DB — has 'lifetract import --exec' ever run?", s.name))
 			continue
 		}
-		last, err := time.ParseInLocation("2006-01-02", s.last, KST)
+
+		parsed, err := time.ParseInLocation("2006-01-02", last, KST)
 		if err != nil {
+			// A date the DB holds and we cannot read is a broken record, not a fresh
+			// one. It used to `continue` in silence and leave the stream looking fine.
+			checked = false
+			st.Warnings = append(st.Warnings,
+				fmt.Sprintf("%s: newest date %q is unreadable — the DB is malformed", s.name, last))
 			continue
 		}
-		behind := int(today.Sub(last).Hours() / 24)
+
+		behind := int(today.Sub(parsed).Hours() / 24)
 		if behind > st.StaleDays {
 			st.StaleDays = behind
 		}
 		if behind >= staleAfterDays {
 			st.Warnings = append(st.Warnings, fmt.Sprintf(
 				"%s is %d days behind (newest %s) — the export has stalled; %s",
-				s.name, behind, s.last, s.remedy))
+				s.name, behind, last, s.remedy))
 		}
 	}
+
+	st.FreshnessChecked = checked
 }
 
 func getATimeLoggerStatus(cfg *Config) ATimeLoggerStatus {
@@ -199,16 +243,16 @@ func cmdToday(cfg *Config) (interface{}, error) {
 		}
 	} else {
 		result.Source = "csv"
-		if steps, err := parseStepRecords(cfg, 1); err == nil && len(steps) > 0 {
+		if steps, err := parseStepRecords(cfg, daysWindow(1)); err == nil && len(steps) > 0 {
 			result.Steps = steps[0].Steps
 		}
-		if sleeps, err := parseSleepRecords(cfg, 2); err == nil && len(sleeps) > 0 {
+		if sleeps, err := parseSleepRecords(cfg, daysWindow(2)); err == nil && len(sleeps) > 0 {
 			result.SleepHours = sleeps[0].DurationHours
 		}
-		if hearts, err := parseHeartRecords(cfg, 1); err == nil && len(hearts) > 0 {
+		if hearts, err := parseHeartRecords(cfg, daysWindow(1)); err == nil && len(hearts) > 0 {
 			result.AvgHR = hearts[0].AvgHR
 		}
-		if stresses, err := parseStressRecords(cfg, 1); err == nil && len(stresses) > 0 {
+		if stresses, err := parseStressRecords(cfg, daysWindow(1)); err == nil && len(stresses) > 0 {
 			result.StressAvg = stresses[0].AvgScore
 		}
 	}
@@ -227,7 +271,7 @@ func cmdSleep(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
 		records, err = dbQuerySleep(cfg, cfg.queryWindow())
 	} else {
-		records, err = parseSleepRecords(cfg, cfg.Days)
+		records, err = parseSleepRecords(cfg, cfg.queryWindow())
 	}
 	if err != nil {
 		return nil, err
@@ -290,28 +334,28 @@ func cmdSteps(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
 		return dbQuerySteps(cfg, cfg.queryWindow())
 	}
-	return parseStepRecords(cfg, cfg.Days)
+	return parseStepRecords(cfg, cfg.queryWindow())
 }
 
 func cmdHeart(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
 		return dbQueryHeart(cfg, cfg.queryWindow())
 	}
-	return parseHeartRecords(cfg, cfg.Days)
+	return parseHeartRecords(cfg, cfg.queryWindow())
 }
 
 func cmdStress(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
 		return dbQueryStress(cfg, cfg.queryWindow())
 	}
-	return parseStressRecords(cfg, cfg.Days)
+	return parseStressRecords(cfg, cfg.queryWindow())
 }
 
 func cmdExercise(cfg *Config) (interface{}, error) {
 	if dbExists(cfg) {
 		return dbQueryExercise(cfg, cfg.queryWindow())
 	}
-	return parseExerciseRecords(cfg, cfg.Days)
+	return parseExerciseRecords(cfg, cfg.queryWindow())
 }
 
 func cmdTime(cfg *Config) (interface{}, error) {
@@ -335,7 +379,7 @@ func cmdTime(cfg *Config) (interface{}, error) {
 	// it cannot be mistaken for a record.
 	if len(records) == 0 {
 		msg := "no aTimeLogger blocks in the requested window"
-		if last := dbLastDate(cfg, "SELECT DATE(MAX(start_time), 'unixepoch', '+9 hours') FROM atl_interval WHERE is_deleted = 0"); last != "" {
+		if last, err := dbLastDate(cfg, "SELECT DATE(MAX(start_time), 'unixepoch', '+9 hours') FROM atl_interval WHERE is_deleted = 0"); err == nil && last != "" {
 			msg += fmt.Sprintf("; DB holds blocks only through %s — run 'lifetract import --exec' if the phone export is newer", last)
 		}
 		fmt.Fprintln(os.Stderr, "warning: "+msg)
