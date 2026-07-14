@@ -51,20 +51,36 @@ case "${1:-}" in
 
         HEAD_SHA=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
 
-        echo "🔨 build → $BIN_DIR  (HEAD ${HEAD_SHA:0:12})"
+        # 검증 전에는 운영 바이너리를 건드리지 않는다.
+        #
+        # 옛 판본은 $BIN_DIR 로 곧장 빌드한 뒤 provenance 를 검사했다. 검사가 실패하면
+        # exit 1 이지만 **이미 덮은 뒤**다 — 거부된 바이너리가 운영 자리에 앉은 채로.
+        # 이건 import 가 후보에 짓고 성한 run 만 승격하는 것과 같은 규율이다:
+        # 임시 자리에 짓고, 검증하고, 통과한 것만 원자적으로 옮긴다.
+        # staging 은 $BIN_DIR 안에 둔다 — mv 가 원자적 교체이려면 같은 파일시스템이어야
+        # 한다. /tmp 에 지으면 mv 는 복사+삭제가 되고, 그 중간에 반쪽짜리 바이너리가
+        # 운영 자리에 보인다.
         mkdir -p "$BIN_DIR"
-        (cd "$SCRIPT_DIR/lifetract" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$BIN_DIR/lifetract" .)
+        STAGE=$(mktemp -d "$BIN_DIR/.lifetract-stage.XXXXXX")
+        trap 'rm -rf "$STAGE"' EXIT
+
+        echo "🔨 build → (staging)  (HEAD ${HEAD_SHA:0:12})"
+        (cd "$SCRIPT_DIR/lifetract" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$STAGE/lifetract" .)
 
         # 바이너리가 스스로 무엇인지 말하게 한다 (go version -m).
         # go version -m 은 `build\tvcs.revision=<sha>` 처럼 key=value 를 한 필드로 준다.
-        BIN_INFO=$(go version -m "$BIN_DIR/lifetract")
+        BIN_INFO=$(go version -m "$STAGE/lifetract")
         BIN_REV=$(printf '%s' "$BIN_INFO" | sed -n 's/.*vcs\.revision=\([0-9a-f]*\).*/\1/p')
         BIN_MOD=$(printf '%s' "$BIN_INFO" | sed -n 's/.*vcs\.modified=\([a-z]*\).*/\1/p')
         if [ "$BIN_REV" != "$HEAD_SHA" ] || [ "$BIN_MOD" != "false" ]; then
             echo "❌ 빌드가 HEAD 를 안 담았다: revision=${BIN_REV:0:12} modified=$BIN_MOD" >&2
+            echo "   운영 바이너리는 그대로다 ($BIN_DIR/lifetract)." >&2
             exit 1
         fi
         echo "   ✓ vcs.revision=${BIN_REV:0:12} vcs.modified=false"
+
+        # 통과했으니 이제 옮긴다 (같은 파일시스템 → rename, 원자적 교체).
+        mv "$STAGE/lifetract" "$BIN_DIR/lifetract"
 
         WANT_BIN=$(sha256sum "$BIN_DIR/lifetract" | awk '{print $1}')
         echo "   ✓ ${WANT_BIN:0:8}  $BIN_DIR/lifetract"
