@@ -518,8 +518,14 @@ func TestCmdImport(t *testing.T) {
 	if len(m.Sources) == 0 {
 		t.Error("sources should not be empty")
 	}
-	if m.TotalRows == 0 {
-		t.Error("total_rows should be > 0")
+	if m.RawSourceRows == 0 {
+		t.Error("raw_source_rows should be > 0")
+	}
+	// The dry run counts source rows, not rows that will be imported — two sources
+	// are listed and never loaded. The name says which one it is; it used to say
+	// total_rows, sitting next to the import's total_rows, meaning something else.
+	if m.Note == "" {
+		t.Error("note should say what raw_source_rows counts")
 	}
 	if m.CategoryPolicy == nil {
 		t.Error("category_policy should not be nil")

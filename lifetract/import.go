@@ -19,20 +19,24 @@ func cmdImport(cfg *Config) (interface{}, error) {
 		Sources:   []ImportSource{},
 	}
 
+	// imported says whether --exec actually loads this source. steps_pedometer and
+	// activity_summary are listed because they are in the export, not because they
+	// land in the DB.
 	shealthSources := []struct {
-		name    string
-		pattern string
+		name     string
+		pattern  string
+		imported bool
 	}{
-		{"sleep", "com.samsung.shealth.sleep."},
-		{"sleep_stage", "com.samsung.health.sleep_stage."},
-		{"heart_rate", "com.samsung.shealth.tracker.heart_rate."},
-		{"steps_daily", "com.samsung.shealth.step_daily_trend."},
-		{"steps_pedometer", "com.samsung.shealth.tracker.pedometer_step_count."},
-		{"stress", "com.samsung.shealth.stress."},
-		{"exercise", "com.samsung.shealth.exercise.2"},
-		{"weight", "com.samsung.health.weight."},
-		{"hrv", "com.samsung.health.hrv."},
-		{"activity_summary", "com.samsung.shealth.activity.day_summary."},
+		{"sleep", "com.samsung.shealth.sleep.", true},
+		{"sleep_stage", "com.samsung.health.sleep_stage.", true},
+		{"heart_rate", "com.samsung.shealth.tracker.heart_rate.", true},
+		{"steps_daily", "com.samsung.shealth.step_daily_trend.", true},
+		{"steps_pedometer", "com.samsung.shealth.tracker.pedometer_step_count.", false},
+		{"stress", "com.samsung.shealth.stress.", true},
+		{"exercise", "com.samsung.shealth.exercise.2", true},
+		{"weight", "com.samsung.health.weight.", true},
+		{"hrv", "com.samsung.health.hrv.", true},
+		{"activity_summary", "com.samsung.shealth.activity.day_summary.", false},
 	}
 
 	for _, s := range shealthSources {
@@ -46,29 +50,33 @@ func cmdImport(cfg *Config) (interface{}, error) {
 		}
 		info, _ := os.Stat(path)
 		manifest.Sources = append(manifest.Sources, ImportSource{
-			Name:   s.name,
-			Type:   "samsung_health_csv",
-			Path:   path,
-			Rows:   rows,
-			SizeMB: float64(info.Size()) / (1024 * 1024),
+			Name:     s.name,
+			Type:     "samsung_health_csv",
+			Path:     path,
+			RawRows:  rows,
+			Imported: s.imported,
+			SizeMB:   float64(info.Size()) / (1024 * 1024),
 		})
-		manifest.TotalRows += rows
+		manifest.RawSourceRows += rows
 	}
 
 	if info, err := os.Stat(cfg.ATimeLoggerDB); err == nil {
 		rows := atlIntervalCount(cfg)
 		manifest.Sources = append(manifest.Sources, ImportSource{
-			Name:   "atimelogger",
-			Type:   "sqlite",
-			Path:   cfg.ATimeLoggerDB,
-			Rows:   rows,
-			SizeMB: float64(info.Size()) / (1024 * 1024),
+			Name:     "atimelogger",
+			Type:     "sqlite",
+			Path:     cfg.ATimeLoggerDB,
+			RawRows:  rows,
+			Imported: true,
+			SizeMB:   float64(info.Size()) / (1024 * 1024),
 		})
-		manifest.TotalRows += rows
+		manifest.RawSourceRows += rows
 	}
 
 	manifest.CategoryPolicy = defaultCategoryPolicy()
 	manifest.EstimatedDBSizeMB = 30
+	manifest.Note = "raw_source_rows counts rows in the sources, not rows that will be imported: " +
+		"sources with imported=false are skipped, and --exec dedups and filters (run it for the real count)"
 
 	return manifest, nil
 }
@@ -89,19 +97,28 @@ func atlIntervalCount(cfg *Config) int {
 	return n
 }
 
+// ImportManifest is a dry run: what is in the sources, not what will land in the
+// DB. The two differ by about 22k rows — the manifest counts CSV lines, while the
+// import drops per-device duplicates (steps keeps only source_type=-2), skips two
+// sources entirely, and dedups by UUID. The field is named raw_source_rows because
+// it was previously named total_rows, sat next to the import's total_rows, and
+// meant something else. Two numbers with one name is how a tool starts lying by
+// accident.
 type ImportManifest struct {
 	CreatedAt         string          `json:"created_at"`
 	Sources           []ImportSource  `json:"sources"`
-	TotalRows         int             `json:"total_rows"`
+	RawSourceRows     int             `json:"raw_source_rows"`
+	Note              string          `json:"note"`
 	EstimatedDBSizeMB int             `json:"estimated_db_size_mb"`
 	CategoryPolicy    *CategoryPolicy `json:"category_policy"`
 }
 
 type ImportSource struct {
-	Name   string  `json:"name"`
-	Type   string  `json:"type"`
-	Path   string  `json:"path"`
-	Rows   int     `json:"rows,omitempty"`
-	SizeMB float64 `json:"size_mb"`
-	Note   string  `json:"note,omitempty"`
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	Path     string  `json:"path"`
+	RawRows  int     `json:"raw_rows,omitempty"`
+	Imported bool    `json:"imported"` // false = present in the export, not loaded by --exec
+	SizeMB   float64 `json:"size_mb"`
+	Note     string  `json:"note,omitempty"`
 }
