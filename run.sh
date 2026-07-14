@@ -27,38 +27,52 @@ case "${1:-}" in
         (cd "$SCRIPT_DIR/lifetract" && go test -bench=. -benchtime=3s -v)
         ;;
     update)
-        # 날짜 폴더(YYYYMMDD)에서 데이터를 꺼내 lifetract가 인식하는 위치로 배치 후 DB 재빌드
+        # 폰이 Syncthing 으로 떨군 최신 덤프를 받아 배치하고 DB 재빌드.
+        #
+        # Samsung export 는 자동으로 흐르지 않는다 — 사람이 폰에서 내보내야 한다.
+        # 그래서 여기 오는 건 가끔이고, 그 사이 데이터는 낡는다. `lifetract status`
+        # 가 낡음을 신고한다 (AGENTS.md §3.5).
         DATA_DIR="$HOME/repos/gh/self-tracking-data"
+        DROP_DIR="${LIFEDATA_DIR:-$HOME/sync/family/lifedata}"
         LIFETRACT="${LIFETRACT_BIN:-$HOME/.local/bin/lifetract}"
 
-        # 최신 날짜 폴더 찾기
-        LATEST_DATE=$(find "$DATA_DIR" -maxdepth 1 -type d | grep -E '/[0-9]{8}$' | sort | tail -1)
-        if [ -z "$LATEST_DATE" ]; then
-            echo "❌ 날짜 폴더(YYYYMMDD)가 없습니다: $DATA_DIR" >&2
-            exit 1
-        fi
-        echo "📂 최신 날짜 폴더: $LATEST_DATE"
+        echo "📂 덤프 위치: $DROP_DIR"
 
-        # 1. Samsung Health — samsunghealth_* 폴더를 데이터 루트로 이동
-        SHEALTH_DIR=$(find "$LATEST_DATE" -maxdepth 1 -type d -name 'samsunghealth_*' | head -1)
-        if [ -n "$SHEALTH_DIR" ]; then
-            TARGET="$DATA_DIR/$(basename "$SHEALTH_DIR")"
-            if [ -d "$TARGET" ]; then
-                echo "⏭️  Samsung Health 이미 존재: $(basename "$SHEALTH_DIR")"
-            else
-                mv "$SHEALTH_DIR" "$DATA_DIR/"
-                echo "✅ Samsung Health 이동: $(basename "$SHEALTH_DIR")"
+        # 1. Samsung Health — 최신 zip 을 풀어 고정 폴더를 통째로 교체
+        #
+        # 폴더는 하나만 둔다. Samsung 은 export 시각을 파일명에 박기 때문에
+        # (com.samsung.shealth.sleep.20260714110176.csv), 새 CSV 를 옛 CSV 옆에
+        # 그냥 풀면 두 세대가 한 폴더에 섞인다. 그래서 교체 전에 지운다.
+        # export 는 언제나 전체 이력을 담은 누적 덤프라 옛 폴더를 버려도 잃는 게 없다.
+        SHEALTH_ZIP=$(ls -1t "$DROP_DIR"/samsunghealth_*.zip 2>/dev/null | head -1)
+        if [ -n "$SHEALTH_ZIP" ]; then
+            echo "📦 최신 Samsung export: $(basename "$SHEALTH_ZIP")"
+            TMP=$(mktemp -d)
+            trap 'rm -rf "$TMP"' EXIT
+            unzip -q "$SHEALTH_ZIP" -d "$TMP"
+
+            INNER=$(find "$TMP" -maxdepth 1 -type d -name 'samsunghealth_*' | head -1)
+            if [ -z "$INNER" ]; then
+                echo "❌ zip 안에 samsunghealth_* 폴더가 없습니다" >&2
+                exit 1
             fi
+            # samsunghealth_gtgkjh_20260714110176 → samsunghealth_gtgkjh
+            STABLE=$(basename "$INNER" | sed -E 's/_[0-9]{14,}$//')
+
+            rm -rf "${DATA_DIR:?}/$STABLE"
+            mv "$INNER" "$DATA_DIR/$STABLE"
+            echo "✅ Samsung Health 교체: $STABLE/ ($(find "$DATA_DIR/$STABLE" -type f | wc -l) 파일)"
         else
-            echo "⚠️  Samsung Health 폴더 없음 (스킵)"
+            echo "⚠️  Samsung Health zip 없음 (스킵): $DROP_DIR/samsunghealth_*.zip"
         fi
 
-        # 2. aTimeLogger — SQLite DB 또는 .eml(실제 SQLite) 찾아서 교체
+        # 2. aTimeLogger — 같은 덤프 폴더에서 SQLite 를 찾아 교체.
+        # .eml 은 확장자만 메일이고 실제로는 SQLite 라 헤더로 판별한다.
+        # .atl2bkp(XML) 은 손대지 않는다 — 가족 이름이 평문으로 들어 있다.
         ATL_UPDATED=false
-        for candidate in "$LATEST_DATE"/aTimeLogger*.eml "$LATEST_DATE"/*.db3 "$LATEST_DATE"/database.db3; do
+        for candidate in $(ls -1t "$DROP_DIR"/aTimeLogger*.eml "$DROP_DIR"/*.db3 2>/dev/null); do
             [ -f "$candidate" ] || continue
-            HEADER=$(head -c 16 "$candidate" 2>/dev/null || true)
-            if echo "$HEADER" | grep -q "SQLite format"; then
+            if head -c 16 "$candidate" 2>/dev/null | grep -q "SQLite format"; then
                 mkdir -p "$DATA_DIR/atimelogger"
                 cp "$candidate" "$DATA_DIR/atimelogger/database.db3"
                 echo "✅ aTimeLogger DB 갱신: $(basename "$candidate")"
@@ -67,7 +81,7 @@ case "${1:-}" in
             fi
         done
         if ! $ATL_UPDATED; then
-            echo "⚠️  aTimeLogger SQLite 파일 없음 (스킵)"
+            echo "⚠️  aTimeLogger SQLite 파일 없음 (스킵): $DROP_DIR"
         fi
 
         # 3. lifetract import --exec

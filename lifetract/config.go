@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -101,17 +102,49 @@ func newConfig(flags map[string]string) *Config {
 // Searches primary ShealthDir first, then falls back to other dirs.
 func (c *Config) shealthCSV(pattern string) string {
 	if c.ShealthDir != "" {
-		matches, _ := filepath.Glob(filepath.Join(c.ShealthDir, pattern+"*.csv"))
-		if len(matches) > 0 {
-			return matches[0]
+		if m := newestCSV(c.ShealthDir, pattern); m != "" {
+			return m
 		}
 	}
 	// Fallback: search all shealth dirs (newest first)
 	for i := len(c.ShealthDirs) - 1; i >= 0; i-- {
-		matches, _ := filepath.Glob(filepath.Join(c.ShealthDirs[i], pattern+"*.csv"))
-		if len(matches) > 0 {
-			return matches[0]
+		if m := newestCSV(c.ShealthDirs[i], pattern); m != "" {
+			return m
 		}
 	}
 	return ""
+}
+
+// newestCSV returns the most recent export of exactly one CSV kind in dir.
+//
+// Samsung names every file <kind>.<export-timestamp>.csv, and two things bite:
+//
+//  1. The pattern is a prefix, so it also catches OTHER kinds that extend it:
+//     "com.samsung.shealth.stress." matches the real 7 MB stress export and also
+//     stress.histogram (1 KB) and stress.base_histogram. Only the file whose
+//     remainder is purely the timestamp is the kind we asked for.
+//
+//  2. Among the survivors, glob order is lexical, so the OLDEST export comes
+//     first. Taking the first match would silently read a stale generation
+//     whenever two land in one directory — which is what happens now that all
+//     exports share a folder.
+//
+// So: keep only <pattern><digits>.csv, then take the newest. Getting either half
+// wrong is silent — one reads a 1 KB histogram as if it were the stress log and
+// reports zero rows; the other reads two-month-old data and reports success.
+func newestCSV(dir, pattern string) string {
+	matches, _ := filepath.Glob(filepath.Join(dir, pattern+"*.csv"))
+
+	var exact []string
+	for _, m := range matches {
+		stamp := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), pattern), ".csv")
+		if stamp != "" && strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+			exact = append(exact, m)
+		}
+	}
+	if len(exact) == 0 {
+		return ""
+	}
+	sort.Strings(exact) // pure-digit stamps: lexical order == chronological
+	return exact[len(exact)-1]
 }

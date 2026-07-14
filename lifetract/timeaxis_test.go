@@ -437,3 +437,66 @@ func TestFreshDBStaysQuiet(t *testing.T) {
 		t.Errorf("a current DB must not warn, got: %q", db.Warnings)
 	}
 }
+
+// TestNewestExportWins pins the trap that appears the moment all Samsung exports
+// share one folder (2026-07-14). Samsung stamps the export time into every
+// filename, so a directory can hold two generations of the same CSV:
+//
+//	com.samsung.shealth.sleep.20260518102827.csv   ← stale, stops at 05-17
+//	com.samsung.shealth.sleep.20260714110176.csv   ← current, runs to 07-13
+//
+// filepath.Glob returns them in lexical order, so the OLD one comes first. The
+// code used to take matches[0] and would have read two months of nothing while
+// reporting success — the same silent wrongness as every other bug found today.
+func TestNewestExportWins(t *testing.T) {
+	dir := t.TempDir()
+	const kind = "com.samsung.shealth.sleep."
+
+	for _, stamp := range []string{"20260714110176", "20260518102827"} { // written newest-first on purpose
+		if err := os.WriteFile(filepath.Join(dir, kind+stamp+".csv"), []byte(stamp), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := &Config{ShealthDir: dir, ShealthDirs: []string{dir}}
+	got := cfg.shealthCSV(kind)
+
+	if !strings.Contains(got, "20260714110176") {
+		t.Errorf("shealthCSV picked %q — the newest export must win, not the first one glob happens to list", got)
+	}
+}
+
+// TestSubKindIsNotMistakenForItsParent pins the other half, which the first
+// version of newestCSV got wrong and which cost a whole table.
+//
+// The pattern is a prefix, so "com.samsung.shealth.stress." also matches
+// stress.histogram and stress.base_histogram. The real stress export is 7 MB; the
+// histograms are ~1 KB. Digits sort before letters, so taking the FIRST match had
+// been picking the right file by luck — and switching to the LAST match to fix
+// the stale-generation bug quietly started reading a 1 KB histogram as the stress
+// log. Import reported "ok" and 0 rows.
+//
+// Only the file whose remainder is purely the timestamp is the kind we asked for.
+func TestSubKindIsNotMistakenForItsParent(t *testing.T) {
+	dir := t.TempDir()
+	const kind = "com.samsung.shealth.stress."
+
+	// Exactly what the 2026-07-14 export ships.
+	files := map[string]string{
+		"com.samsung.shealth.stress.20260714110176.csv":                "the real stress log",
+		"com.samsung.shealth.stress.histogram.20260714110176.csv":      "a histogram",
+		"com.samsung.shealth.stress.base_histogram.20260714110176.csv": "another histogram",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := &Config{ShealthDir: dir, ShealthDirs: []string{dir}}
+	got := filepath.Base(cfg.shealthCSV(kind))
+
+	if got != "com.samsung.shealth.stress.20260714110176.csv" {
+		t.Errorf("shealthCSV picked %q — a sub-kind is not its parent; only <kind>.<timestamp>.csv counts", got)
+	}
+}
