@@ -211,6 +211,43 @@ func (c *HAClient) GetHistory(entityID string, start, end time.Time) ([]HAState,
 	return series[0], nil
 }
 
+// HALogEntry is one row from GET /api/logbook/<start>.
+type HALogEntry struct {
+	Name      string    `json:"name,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	EntityID  string    `json:"entity_id,omitempty"`
+	ContextID string    `json:"context_id,omitempty"`
+	Domain    string    `json:"domain,omitempty"`
+	When      time.Time `json:"when"`
+	State     string    `json:"state,omitempty"`
+}
+
+// GetLogbook fetches logbook rows in [start, end). entityID empty means every
+// entity. The path timestamp matches GetHistory: unescaped UTC, which this HA
+// accepts. end_time goes through url.Values so '+' is encoded.
+func (c *HAClient) GetLogbook(entityID string, start, end time.Time) ([]HALogEntry, error) {
+	q := url.Values{}
+	q.Set("end_time", end.UTC().Format("2006-01-02T15:04:05+00:00"))
+	if entityID != "" {
+		q.Set("entity", entityID)
+	}
+	startStr := start.UTC().Format("2006-01-02T15:04:05+00:00")
+	path := "/api/logbook/" + startStr + "?" + q.Encode()
+	body, err := c.get(path)
+	if err != nil {
+		return nil, err
+	}
+	var entries []HALogEntry
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return nil, fmt.Errorf("decode logbook: %w", err)
+	}
+	if entries == nil {
+		return []HALogEntry{}, nil
+	}
+	return entries, nil
+}
+
 // get issues an authenticated GET and returns the response body.
 func (c *HAClient) get(path string) ([]byte, error) {
 	req, err := http.NewRequest("GET", c.BaseURL+path, nil)

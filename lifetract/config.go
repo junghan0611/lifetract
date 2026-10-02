@@ -20,6 +20,7 @@ type Config struct {
 	Range         *Window // explicit --from/--to; overrides Days when set
 	Summary       bool
 	Category      string
+	Domain        string // ha entities --domain
 	ReadID        string // Denote ID for read command
 	Exec          bool   // Execute mode (for import)
 }
@@ -173,6 +174,7 @@ func newConfig(flags map[string]string) (*Config, error) {
 		Range:         rng,
 		Summary:       flags["summary"] == "true",
 		Category:      flags["category"],
+		Domain:        flags["domain"],
 	}
 	return cfg, nil
 }

@@ -30,7 +30,7 @@ Commands:
   time    [--days N]     Time category analysis (aTimeLogger)
   import                 Show import manifest (CSV+SQLite → lifetract.db)
   export                 Show export plan (public-safe DB)
-  ha <sub> [arg]         Home Assistant REST (ping|state|states|entities|history)
+  ha <sub> [arg]         Home Assistant REST (ping|state|states|entities|history|logbook)
 
 Flags:
   --days N               Window length (default: 7)
@@ -39,6 +39,7 @@ Flags:
   --data-dir DIR         Data directory (default: ~/repos/gh/self-tracking-data)
   --summary              Summary/aggregated mode
   --category CAT         Filter time category
+  --domain NAME          ha entities only: keep one HA domain (sensor, person, ...)
 
 Windows (every combination means one thing; --days is never ignored):
   --days N               [tomorrow-N, tomorrow) exactly N days including today
@@ -48,6 +49,9 @@ Windows (every combination means one thing; --days is never ignored):
   --from F               [F, tomorrow)
   --to T                 everything before T
   --days N --from F --to T   → error (overspecified: say which two you mean)
+
+  ha history and ha logbook use this window. Other ha subcommands refuse it.
+  ha entities --domain NAME filters the listing; a domain HA does not have is an error.
 
 Time contract:
   All dates are KST (fixed +09:00). The answer never depends on the caller's $TZ.
@@ -142,6 +146,9 @@ func main() {
 		if len(positional) > 1 {
 			haArg = positional[1]
 		}
+		if err := checkHAFlags(sub, flags); err != nil {
+			fail(err)
+		}
 		result, err = cmdHA(cfg, sub, haArg)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
@@ -187,7 +194,7 @@ var (
 	boolFlags  = map[string]bool{"summary": true, "exec": true}
 	valueFlags = map[string]bool{
 		"days": true, "from": true, "to": true,
-		"category": true, "data-dir": true, "shealth-dir": true,
+		"category": true, "domain": true, "data-dir": true, "shealth-dir": true,
 	}
 )
 
@@ -211,7 +218,9 @@ var commandFlags = map[string]map[string]bool{
 	"time":     {"days": true, "from": true, "to": true, "category": true},
 	"import":   {"exec": true},
 	"export":   {},
-	"ha":       {},
+	// Union of what ha subcommands read. checkHAFlags refuses a flag the
+	// chosen subcommand would ignore — `ha ping --days 7` must not pass.
+	"ha": {"days": true, "from": true, "to": true, "domain": true},
 }
 
 var globalFlags = map[string]bool{"data-dir": true, "shealth-dir": true}

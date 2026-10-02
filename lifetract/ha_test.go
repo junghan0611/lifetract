@@ -287,7 +287,11 @@ func TestCmdHAHistoryShapesPoints(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &HAClient{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}
-	out, err := haHistory(c, "sleep_duration", 7)
+	w := Window{
+		From: time.Date(2026, 5, 17, 0, 0, 0, 0, KST),
+		To:   time.Date(2026, 5, 19, 0, 0, 0, 0, KST),
+	}
+	out, err := haHistory(c, "sleep_duration", w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,8 +305,11 @@ func TestCmdHAHistoryShapesPoints(t *testing.T) {
 	if r.Kind != string(KindSleepDuration) {
 		t.Errorf("Kind = %q, want %q", r.Kind, KindSleepDuration)
 	}
-	if r.Days != 7 {
-		t.Errorf("Days = %d, want 7", r.Days)
+	if r.Days != 2 {
+		t.Errorf("Days = %d, want 2", r.Days)
+	}
+	if r.From != "2026-05-17T00:00:00+09:00" || r.To != "2026-05-19T00:00:00+09:00" {
+		t.Errorf("window = %s .. %s, want KST midnights", r.From, r.To)
 	}
 	if r.Points[0].Value == nil || *r.Points[0].Value != 427.0 {
 		t.Errorf("first point value = %v, want 427", r.Points[0].Value)
@@ -340,5 +347,123 @@ func TestCmdHAAllKnownStatesMarksMissing(t *testing.T) {
 	}
 	if !foundMissing {
 		t.Error("at least one entity should be marked missing")
+	}
+}
+
+func TestHAHistoryDropsPointOutsideWindow(t *testing.T) {
+	body := `[[
+		{"entity_id":"sensor.s","state":"1","attributes":{},"last_changed":"2026-05-16T14:59:00Z","last_updated":"2026-05-16T14:59:00Z"},
+		{"entity_id":"sensor.s","state":"2","attributes":{},"last_changed":"2026-05-17T00:00:00+09:00","last_updated":"2026-05-17T00:00:00+09:00"},
+		{"entity_id":"sensor.s","state":"3","attributes":{},"last_changed":"2026-05-18T00:00:00+09:00","last_updated":"2026-05-18T00:00:00+09:00"}
+	]]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+	c := &HAClient{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}
+	w := Window{
+		From: time.Date(2026, 5, 17, 0, 0, 0, 0, KST),
+		To:   time.Date(2026, 5, 18, 0, 0, 0, 0, KST),
+	}
+	out, err := haHistory(c, "sensor.s", w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := out.(HAHistoryResult)
+	if r.Count != 1 || r.Points[0].State != "2" {
+		t.Fatalf("kept %d points state=%v, want the inclusive start only", r.Count, r.Points)
+	}
+}
+
+func TestHAHistoryRequestsWindowNotNow(t *testing.T) {
+	wantFrom := time.Date(2026, 9, 25, 0, 0, 0, 0, KST)
+	wantTo := time.Date(2026, 10, 2, 0, 0, 0, 0, KST)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/history/period/2026-09-24T15:00:00") {
+			t.Errorf("path = %s, want KST 2026-09-25 midnight as UTC", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("end_time"); got != "2026-10-01T15:00:00+00:00" {
+			t.Errorf("end_time = %q, want exclusive KST midnight in UTC", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+	c := &HAClient{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}
+	if _, err := haHistory(c, "sensor.s", Window{From: wantFrom, To: wantTo}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHAEntitiesDomainFilter(t *testing.T) {
+	body := `[{"entity_id":"sensor.a","state":"1","attributes":{}},{"entity_id":"person.b","state":"home","attributes":{}}]`
+	_, c := mockHA(t, map[string]string{"/api/states": body})
+	out, err := haAllEntities(c, "sensor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := out.([]HAEntityInfo)
+	if len(rows) != 1 || rows[0].EntityID != "sensor.a" {
+		t.Fatalf("got %#v", rows)
+	}
+	if _, err := haAllEntities(c, "weather"); err == nil || !strings.Contains(err.Error(), "weather") {
+		t.Fatalf("unknown domain should fail, got %v", err)
+	}
+}
+
+func TestHALogbookFiltersWindow(t *testing.T) {
+	body := `[
+		{"entity_id":"sensor.a","message":"before","when":"2026-05-16T14:00:00Z","state":"1"},
+		{"entity_id":"sensor.a","message":"inside","when":"2026-05-17T01:00:00Z","state":"2"},
+		{"entity_id":"sensor.a","message":"at-end","when":"2026-05-18T00:00:00+09:00","state":"3"}
+	]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/logbook/") {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("entity") != "sensor.a" {
+			t.Errorf("entity = %q", r.URL.Query().Get("entity"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+	c := &HAClient{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}
+	w := Window{
+		From: time.Date(2026, 5, 17, 0, 0, 0, 0, KST),
+		To:   time.Date(2026, 5, 18, 0, 0, 0, 0, KST),
+	}
+	out, err := haLogbook(c, "sensor.a", w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := out.(HALogbookResult)
+	if r.Count != 1 || r.Entries[0].Message != "inside" {
+		t.Fatalf("kept %#v, want the inside row only", r.Entries)
+	}
+	if r.Days != 1 {
+		t.Errorf("Days = %d, want 1", r.Days)
+	}
+}
+
+func TestCheckHAFlags(t *testing.T) {
+	if err := checkHAFlags("ping", map[string]string{"days": "7"}); err == nil {
+		t.Fatal("ha ping --days must be refused")
+	}
+	if err := checkHAFlags("history", map[string]string{"days": "7", "from": "2026-10-01"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkHAFlags("entities", map[string]string{"domain": "sensor"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkHAFlags("history", map[string]string{"domain": "sensor"}); err == nil {
+		t.Fatal("ha history --domain must be refused")
+	}
+	if err := checkFlagsFor("ha", map[string]string{"days": "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkFlagsFor("heart", map[string]string{"domain": "sensor"}); err == nil {
+		t.Fatal("heart --domain must be refused")
 	}
 }
