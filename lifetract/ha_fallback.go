@@ -143,12 +143,12 @@ func sleepEndLocalDay(s HAState) (string, bool) {
 // 12-20h figure (the inflation bug). endTime attribution fixes that; states
 // lacking the attribute fall back to the old 36h window so legacy data and
 // tests still resolve. Returns (0,false) when nothing falls in window.
-func haRecentSleepMinutes(c *HAClient) (float64, bool) {
+func haRecentSleepMinutes(c *HAClient, now time.Time) (float64, bool) {
+	now = now.In(KST)
 	es, ok := EntitiesByKind[KindSleepDuration]
 	if !ok || len(es) == 0 {
 		return 0, false
 	}
-	now := nowKST()
 	states, err := c.GetHistory(es[0].EntityID, now.AddDate(0, 0, -2), now)
 	if err != nil {
 		return 0, false
@@ -246,7 +246,7 @@ func enrichTodayFromHAClient(cfg *Config, today *TodayResult, c *HAClient) {
 		}
 	}
 	if today.SleepHours == 0 || stale {
-		if mins, ok := haRecentSleepMinutes(c); ok && mins > 0 {
+		if mins, ok := haRecentSleepMinutes(c, nowKST()); ok && mins > 0 {
 			today.SleepHours = round1(mins / 60.0)
 			used = append(used, "sleep")
 		}
@@ -318,7 +318,7 @@ func enrichTimelineEntryFromHAClient(cfg *Config, entry *TimelineEntry, c *HACli
 
 	needSleep := h == nil || h.SleepHours == 0 || stale
 	if needSleep {
-		if mins, ok := haRecentSleepMinutes(c); ok && mins > 0 {
+		if mins, ok := haRecentSleepMinutes(c, nowKST()); ok && mins > 0 {
 			if h == nil {
 				h = &HealthMetrics{}
 				entry.Health = h

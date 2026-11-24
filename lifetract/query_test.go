@@ -354,7 +354,7 @@ func TestCmdToday(t *testing.T) {
 	if tr.Date == "" {
 		t.Error("date should not be empty")
 	}
-	want := time.Now().Format("2006-01-02")
+	want := time.Now().In(KST).Format("2006-01-02")
 	if tr.Date != want {
 		t.Errorf("date = %q, want %q (today)", tr.Date, want)
 	}
